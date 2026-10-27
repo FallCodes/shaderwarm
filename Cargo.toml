@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+rust-version = "1.85"
+
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+ash = "0.38"
+shaderwarm-core = { path = "crates/core" }
+
+[profile.release]
+lto = "thin"
+strip = true
