@@ -634,21 +634,20 @@ impl App {
         let content = container(page).padding([18, 24]).width(Length::Fill).height(Length::Fill);
         let phase = if self.reduce() { 0.0 } else { self.now.duration_since(self.booted).as_secs_f32() };
         let backdrop = canvas(shapes::Backdrop { cache: &self.backdrop, phase }).width(Length::Fill).height(Length::Fill);
-        stack![backdrop, content].into()
+        let mut window = stack![backdrop, content];
+        // Switching tabs sweeps a band across the whole window, header included.
+        let t = self.tab_progress();
+        if t < 1.0 {
+            window = window.push(canvas(shapes::Wipe::page(t, self.tab_dir)).width(Length::Fill).height(Length::Fill));
+        }
+        window.into()
     }
 
-    /// The current tab, with a lateral wipe over it while switching.
     fn page(&self) -> Element<'_, Message> {
-        let body = match self.tab {
+        match self.tab {
             Tab::Library => self.library(),
             Tab::Settings => self.settings_page(),
-        };
-        let t = self.tab_progress();
-        if t >= 1.0 {
-            return body;
         }
-        let wipe = canvas(shapes::Wipe::page(t, self.tab_dir)).width(Length::Fill).height(Length::Fill);
-        stack![body, wipe].into()
     }
 
     fn header(&self) -> Element<'_, Message> {
