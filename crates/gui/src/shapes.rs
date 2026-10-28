@@ -101,8 +101,8 @@ impl<M> canvas::Program<M> for Slant {
     }
 }
 
-/// Everything around a cover: the accent slab that slides out on hover/selection, the
-/// selection outline and the name strip below.
+/// Everything behind and below a cover: the accent slab that slides out on
+/// hover/selection and the name strip. The selection frame sits on top, in `CoverFrame`.
 pub struct TileDeco {
     pub name: String,
     pub hover: f32,
@@ -117,16 +117,12 @@ impl<M> canvas::Program<M> for TileDeco {
     fn draw(&self, _: &(), renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor) -> Vec<Geometry> {
         let mut f = Frame::new(renderer, bounds.size());
         let (i, cw, ch) = (self.inset, self.cover.width, self.cover.height);
+        // A straight offset slab, so it shows as an even L along the right and bottom
+        // edges of the (rectangular) cover; slanted, it would cross the image unevenly.
         let k = self.hover.max(self.selected);
         if k > 0.0 {
-            let off = 3.0 + 7.0 * k;
-            f.fill(&slant(i + off * 0.5, i + off, cw, ch, 16.0), alpha(if self.selected > 0.0 { ACCENT } else { ACCENT_HI }, k));
-        }
-        if self.selected > 0.0 {
-            f.stroke(
-                &slant(i - 5.0, i - 5.0, cw + 10.0, ch + 10.0, 12.0),
-                Stroke::default().with_color(alpha(PAPER, self.selected)).with_width(3.0),
-            );
+            let off = 3.0 + 5.0 * k;
+            f.fill_rectangle(Point::new(i + off, i + off), Size::new(cw, ch), alpha(if self.selected > 0.0 { ACCENT } else { ACCENT_HI }, k));
         }
         let strip_y = i + ch + 10.0;
         let strip_h = 26.0;
@@ -135,6 +131,28 @@ impl<M> canvas::Program<M> for TileDeco {
         f.fill(&slant(i, strip_y, cw, strip_h, 8.0), fill);
         let max_chars = ((cw - 18.0) / (14.0 * 0.5)) as usize;
         text(&mut f, &truncate(&self.name.to_uppercase(), max_chars), Point::new(i + cw / 2.0, strip_y + strip_h / 2.0), 14.0, ink, DISPLAY, Horizontal::Center);
+        vec![f.into_geometry()]
+    }
+}
+
+/// Paper frame drawn over a selected cover, so no part of it is hidden by the image.
+pub struct CoverFrame {
+    pub selected: f32,
+}
+
+impl<M> canvas::Program<M> for CoverFrame {
+    type State = ();
+
+    fn draw(&self, _: &(), renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor) -> Vec<Geometry> {
+        if self.selected <= 0.0 {
+            return Vec::new();
+        }
+        let mut f = Frame::new(renderer, bounds.size());
+        let width = 3.0;
+        f.stroke(
+            &Path::rectangle(Point::new(width / 2.0, width / 2.0), Size::new(bounds.width - width, bounds.height - width)),
+            Stroke::default().with_color(alpha(PAPER, self.selected)).with_width(width),
+        );
         vec![f.into_geometry()]
     }
 }

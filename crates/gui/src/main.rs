@@ -692,13 +692,8 @@ impl App {
 
     /// The app's own title bar: drag to move, double-click to maximize.
     fn title_bar(&self) -> Element<'_, Message> {
-        // The header below carries the wordmark, so the bar stays quiet.
-        let label = row![
-            svg(svg::Handle::from_memory(ICON_SVG)).width(20).height(20),
-            Self::tag("Shader cache control", ACCENT, BLACK, 10.0),
-        ]
-        .spacing(10)
-        .align_y(Alignment::Center);
+        // The header below carries the logo and wordmark, so the bar stays quiet.
+        let label = Self::tag("Shader cache control", ACCENT, BLACK, 10.0);
         let grab = mouse_area(container(label).width(Length::Fill).height(36).padding([0, 12]).align_y(Vertical::Center))
             .on_press(Message::TitlePress);
         let control = |hot: Btn, glyph: shapes::Glyph, msg: Message| {
@@ -953,7 +948,13 @@ impl App {
         let at = |extra_top: f32, extra_left: f32| Padding { top: INSET - lift + drop + extra_top, left: INSET - lift * 0.5 + extra_left, ..Padding::ZERO };
         let status = Status::of(r);
         let (fill, ink) = status.colors();
-        let mut layers = stack![deco, container(Self::cover(r, TILE_W, TILE_H)).padding(at(0.0, 0.0)), container(Self::tag(status.label(), fill, ink, 11.0)).padding(at(8.0, -6.0))];
+        let frame = canvas(shapes::CoverFrame { selected }).width(TILE_W).height(TILE_H);
+        let mut layers = stack![
+            deco,
+            container(Self::cover(r, TILE_W, TILE_H)).padding(at(0.0, 0.0)),
+            container(frame).padding(at(0.0, 0.0)),
+            container(Self::tag(status.label(), fill, ink, 11.0)).padding(at(8.0, -6.0)),
+        ];
         if reveal < 1.0 {
             layers = layers.push(container(Space::new(Length::Fill, Length::Fill)).style(style::fill(alpha(BLACK, 1.0 - reveal))));
         }
