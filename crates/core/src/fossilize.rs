@@ -67,8 +67,12 @@ pub fn prefix() -> PathBuf {
 
 /// Our build of the capture layer. Steam's copy can't be used: Steam controls its dump path.
 pub fn layer_library() -> Option<PathBuf> {
-    let p = prefix().join("lib/libVkLayer_fossilize.so");
-    p.is_file().then_some(p)
+    // A package puts it in /usr/lib/shaderwarm next to the tools; the build script in prefix/lib.
+    bundled_dirs()
+        .into_iter()
+        .chain(std::iter::once(prefix().join("lib")))
+        .map(|d| d.join("libVkLayer_fossilize.so"))
+        .find(|p| p.is_file())
 }
 
 /// The installed recording-layer manifest, if `shaderwarm setup` has run.

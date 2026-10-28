@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=shaderwarm
+GenericName=Shader Cache Manager
+Comment=Record and pre-compile shaders for Proton games
+Exec=shaderwarm-gui
+Icon=applications-games
+Terminal=false
+Categories=Game;
+Keywords=shader;cache;proton;steam;stutter;

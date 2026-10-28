@@ -1,0 +1,59 @@
+# Builds shaderwarm from this checkout plus upstream Fossilize (MIT) at a pinned commit.
+# Usage: cd packaging && makepkg -si
+pkgname=shaderwarm
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Record and pre-compile Vulkan pipelines for Proton games"
+arch=('x86_64')
+url="https://github.com/ValveSoftware/Fossilize"
+license=('GPL-3.0-or-later' 'MIT')
+depends=('gcc-libs' 'glibc' 'vulkan-icd-loader' 'systemd' 'util-linux' 'libxkbcommon' 'wayland')
+makedepends=('cargo' 'cmake' 'ninja' 'git' 'python')
+_fossilize_commit=556da9ff7d7616704dda515756219ab1dab693ec
+source=("fossilize::git+https://github.com/ValveSoftware/Fossilize.git#commit=${_fossilize_commit}")
+sha256sums=('SKIP')
+options=('!lto')
+
+_tree() {
+    realpath "$startdir/.."
+}
+
+prepare() {
+    git -C fossilize submodule update --init --recursive
+    cd "$(_tree)"
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    # Keep build paths (from __FILE__ in log messages) out of the binaries.
+    CFLAGS+=" -ffile-prefix-map=$srcdir=."
+    CXXFLAGS+=" -ffile-prefix-map=$srcdir=."
+    cmake -S fossilize -B build-fossilize -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DFOSSILIZE_VULKAN_LAYER=ON \
+        -DFOSSILIZE_CLI=ON \
+        -DFOSSILIZE_TESTS=OFF
+    cmake --build build-fossilize
+
+    cd "$(_tree)"
+    CARGO_TARGET_DIR="$srcdir/target" cargo build --frozen --release
+}
+
+check() {
+    cd "$(_tree)"
+    CARGO_TARGET_DIR="$srcdir/target" cargo test --frozen --release -p shaderwarm-core
+}
+
+package() {
+    local tree
+    tree="$(_tree)"
+    install -Dm755 target/release/shaderwarm "$pkgdir/usr/bin/shaderwarm"
+    install -Dm755 target/release/shaderwarm-gui "$pkgdir/usr/bin/shaderwarm-gui"
+    # The CLI finds these in ../lib/shaderwarm relative to itself.
+    install -Dm755 build-fossilize/cli/fossilize-replay "$pkgdir/usr/lib/shaderwarm/fossilize-replay"
+    install -Dm755 build-fossilize/cli/fossilize-merge-db "$pkgdir/usr/lib/shaderwarm/fossilize-merge-db"
+    install -Dm755 build-fossilize/layer/libVkLayer_fossilize.so "$pkgdir/usr/lib/shaderwarm/libVkLayer_fossilize.so"
+    install -Dm644 "$tree/packaging/shaderwarm.desktop" "$pkgdir/usr/share/applications/shaderwarm.desktop"
+    install -Dm644 "$tree/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 fossilize/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE.fossilize"
+}

@@ -1,3 +1,7 @@
 /target
 /vendor/build
 /vendor/fossilize
+/packaging/src
+/packaging/pkg
+/packaging/fossilize
+/packaging/*.pkg.tar.*
