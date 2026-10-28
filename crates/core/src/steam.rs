@@ -102,6 +102,146 @@ impl Steam {
             .try_fold(&doc, |node, key| node.get(key))?;
         Some(manager.get_str("DisableShaderCache")? != "1")
     }
+
+    /// Flips the "Enable Shader Pre-Caching" toggle in `config/config.vdf`. Steam reads
+    /// the file at startup and rewrites it on exit, so call this only while Steam is
+    /// closed. Only an existing setting is changed; every other byte stays as it was.
+    pub fn set_precaching(&self, enabled: bool) -> Result<()> {
+        let path = self.root.join("config/config.vdf");
+        let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let edited = set_disable_shader_cache(&text, !enabled)
+            .context("Steam's pre-caching setting is not in config.vdf; toggle it once in Steam > Settings > Downloads")?;
+        if edited == text {
+            return Ok(());
+        }
+        let backup = path.with_extension("vdf.shaderwarm-bak");
+        if !backup.exists() {
+            fs::copy(&path, &backup).with_context(|| format!("backing up {}", path.display()))?;
+        }
+        let tmp = path.with_extension("vdf.shaderwarm-tmp");
+        fs::write(&tmp, edited)?;
+        fs::rename(&tmp, &path).with_context(|| format!("writing {}", path.display()))?;
+        Ok(())
+    }
+
+    /// The command that starts this Steam install (or talks to the running one).
+    pub fn launcher(&self) -> Vec<String> {
+        if self.root.components().any(|c| c.as_os_str() == "com.valvesoftware.Steam") {
+            ["flatpak", "run", "com.valvesoftware.Steam"].map(String::from).to_vec()
+        } else {
+            vec!["steam".into()]
+        }
+    }
+}
+
+/// Whether the Steam client (or its bootstrap script) is running.
+pub fn client_running(proc_root: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(proc_root) else { return false };
+    entries.flatten().any(|e| {
+        e.file_name().to_str().is_some_and(|s| s.parse::<u32>().is_ok())
+            && fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim() == "steam")
+    })
+}
+
+const SHADER_CACHE_MANAGER: [&str; 5] = ["InstallConfigStore", "Software", "Valve", "Steam", "ShaderCacheManager"];
+
+/// Rewrites the value of `DisableShaderCache` in the ShaderCacheManager block. Steam
+/// writes one token pair or brace per line, which is all this has to follow. `None`
+/// when the setting isn't there.
+fn set_disable_shader_cache(text: &str, disable: bool) -> Option<String> {
+    let value = if disable { "1" } else { "0" };
+    let mut stack: Vec<String> = Vec::new();
+    let mut pending: Option<String> = None;
+    let mut found = false;
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let t = line.trim();
+        let mut replacement = None;
+        if t == "{" {
+            stack.push(pending.take().unwrap_or_default());
+        } else if t == "}" {
+            stack.pop();
+            pending = None;
+        } else {
+            match quoted_tokens(t).as_slice() {
+                [key] => pending = Some(key.clone()),
+                [key, _] => {
+                    pending = None;
+                    let in_manager = stack.len() == SHADER_CACHE_MANAGER.len()
+                        && stack.iter().zip(SHADER_CACHE_MANAGER).all(|(a, b)| a.eq_ignore_ascii_case(b));
+                    if !found && in_manager && key.eq_ignore_ascii_case("DisableShaderCache") {
+                        found = true;
+                        let end = line.rfind('"')?;
+                        let start = line[..end].rfind('"')?;
+                        replacement = Some(format!("{}{value}{}", &line[..=start], &line[end..]));
+                    }
+                }
+                _ => pending = None,
+            }
+        }
+        out.push_str(replacement.as_deref().unwrap_or(line));
+    }
+    found.then_some(out)
+}
+
+fn quoted_tokens(line: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '"' {
+            continue;
+        }
+        let mut token = String::new();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => token.extend(chars.next()),
+                '"' => break,
+                c => token.push(c),
+            }
+        }
+        tokens.push(token);
+    }
+    tokens
+}
+
+#[cfg(test)]
+mod precaching_tests {
+    use super::*;
+
+    const CONFIG: &str = "\"InstallConfigStore\"\n{\n\t\"Software\"\n\t{\n\t\t\"Valve\"\n\t\t{\n\t\t\t\"Steam\"\n\t\t\t{\n\
+        \t\t\t\t\"ShaderCacheManager\"\n\t\t\t\t{\n\t\t\t\t\t\"App\"\n\t\t\t\t\t{\n\t\t\t\t\t\t\"42\"\n\t\t\t\t\t\t{\n\
+        \t\t\t\t\t\t\t\"DisableShaderCache\"\t\t\"1\"\n\t\t\t\t\t\t}\n\t\t\t\t\t}\n\
+        \t\t\t\t\t\"DisableShaderCache\"\t\t\"1\"\n\t\t\t\t\t\"EnableShaderBackgroundProcessing\"\t\t\"0\"\n\
+        \t\t\t\t}\n\t\t\t\t\"Other\"\n\t\t\t\t{\n\t\t\t\t\t\"DisableShaderCache\"\t\t\"1\"\n\t\t\t\t}\n\
+        \t\t\t}\n\t\t}\n\t}\n}\n";
+
+    #[test]
+    fn flips_only_the_manager_setting() {
+        let on = set_disable_shader_cache(CONFIG, false).unwrap();
+        let changed: Vec<(&str, &str)> = CONFIG.lines().zip(on.lines()).filter(|(a, b)| a != b).collect();
+        assert_eq!(changed, [("\t\t\t\t\t\"DisableShaderCache\"\t\t\"1\"", "\t\t\t\t\t\"DisableShaderCache\"\t\t\"0\"")]);
+        assert_eq!(set_disable_shader_cache(&on, true).unwrap(), CONFIG, "round trip is byte-identical");
+        assert_eq!(set_disable_shader_cache(CONFIG, true).unwrap(), CONFIG);
+    }
+
+    #[test]
+    fn missing_setting_is_reported() {
+        assert_eq!(set_disable_shader_cache("\"InstallConfigStore\"\n{\n}\n", false), None);
+    }
+
+    #[test]
+    fn writes_config_with_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("config")).unwrap();
+        fs::write(tmp.path().join("config/config.vdf"), CONFIG).unwrap();
+        let steam = Steam { root: tmp.path().to_path_buf(), libraries: Vec::new() };
+        assert_eq!(steam.precaching_enabled(), Some(false));
+        steam.set_precaching(true).unwrap();
+        assert_eq!(steam.precaching_enabled(), Some(true));
+        steam.set_precaching(false).unwrap();
+        assert_eq!(fs::read_to_string(tmp.path().join("config/config.vdf")).unwrap(), CONFIG);
+        assert_eq!(fs::read_to_string(tmp.path().join("config/config.vdf.shaderwarm-bak")).unwrap(), CONFIG);
+    }
 }
 
 fn manifests(library: &Path) -> Vec<Game> {

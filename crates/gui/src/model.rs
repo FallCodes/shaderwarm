@@ -2,6 +2,8 @@
 //! UI calls it through [`blocking`] or a job thread.
 
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use iced::futures::channel::{mpsc, oneshot};
@@ -18,6 +20,7 @@ use shaderwarm_core::state::Staleness;
 use shaderwarm_core::fsutil::tree_size;
 use shaderwarm_core::paths;
 use shaderwarm_core::steam::{Artwork, Game, Steam};
+use shaderwarm_core::steamfetch::{self, Event as FetchEvent};
 use shaderwarm_core::units;
 
 pub const LAUNCH_OPTION: &str = "shaderwarm run -- %command%";
@@ -54,6 +57,8 @@ pub struct Snapshot {
     pub precaching: Option<bool>,
     pub layer_installed: bool,
     pub auto_replay: bool,
+    /// An earlier "Fetch from Steam" stopped with Steam open and pre-caching on.
+    pub interrupted_fetch: bool,
     pub rows: Vec<Row>,
 }
 
@@ -63,6 +68,8 @@ fn err(e: anyhow::Error) -> String {
 
 pub fn load() -> Result<Snapshot, String> {
     let steam = Steam::locate().map_err(err)?;
+    // With Steam closed an interrupted fetch is put right silently; otherwise it's flagged.
+    let _ = steamfetch::recover(&steam);
     let gpus = gpu::enumerate().unwrap_or_default();
     let primary = gpu::primary(&gpus).cloned();
     let db = selfcompile::Database::load().map_err(err)?;
@@ -98,6 +105,7 @@ pub fn load() -> Result<Snapshot, String> {
         precaching: steam.precaching_enabled(),
         layer_installed: fossilize::layer_manifest().is_some(),
         auto_replay: units::installed(),
+        interrupted_fetch: steamfetch::interrupted().is_some(),
         rows,
     })
 }
@@ -142,6 +150,50 @@ pub fn spawn_replay(appids: Vec<u32>, threads: usize) -> mpsc::UnboundedReceiver
         send(JobEvent::AllDone);
     });
     rx
+}
+
+#[derive(Debug, Clone)]
+pub enum FetchMsg {
+    Event(FetchEvent),
+    /// The games Steam updated, or what went wrong, plus a summary line.
+    Done(Result<(Vec<u32>, String), String>),
+}
+
+/// Runs a "Fetch from Steam" window on a worker thread. Setting `cancel` ends the window
+/// early; Steam's settings are restored either way.
+pub fn spawn_fetch(delete_video: bool, cancel: Arc<AtomicBool>) -> mpsc::UnboundedReceiver<FetchMsg> {
+    let (tx, rx) = mpsc::unbounded();
+    std::thread::spawn(move || {
+        let result = Steam::locate().and_then(|steam| {
+            let report = steamfetch::run(&steam, &steamfetch::Options::default(), &cancel, |e| {
+                let _ = tx.unbounded_send(FetchMsg::Event(e));
+            })?;
+            let mut summary = capitalize(report.end.describe());
+            if delete_video {
+                let targets: Vec<_> = report.updated.iter().filter_map(|&id| steam.game(id)).flat_map(|g| clean::video_targets(&g)).collect();
+                let total: u64 = targets.iter().map(|t| t.size).sum();
+                clean::remove(&targets, None)?;
+                if total > 0 {
+                    summary.push_str(&format!("; deleted {} of video", size(total)));
+                }
+            }
+            Ok((report.updated, summary))
+        });
+        let _ = tx.unbounded_send(FetchMsg::Done(result.map_err(err)));
+    });
+    rx
+}
+
+/// Turns pre-caching back off after an interrupted fetch (restarting Steam if it's open).
+pub fn finish_fetch() -> Result<String, String> {
+    let steam = Steam::locate().map_err(err)?;
+    steamfetch::finish(&steam).map_err(err)?;
+    Ok("Steam Shader Pre-Caching is off again".into())
+}
+
+pub fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 fn with_game<T>(appid: u32, f: impl FnOnce(&Game) -> anyhow::Result<T>) -> Result<T, String> {

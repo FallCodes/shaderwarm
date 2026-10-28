@@ -72,6 +72,20 @@ sets variables and cannot run commands.
 | `shaderwarm clean --video` | Delete Steam's transcoded video (often GBs) |
 | `shaderwarm clean <appid> --cache [--backup] [--recordings]` | Purge one game's compiled caches |
 | `shaderwarm restore <appid>` | Put a `--backup` purge back |
+| `shaderwarm fetch [--keep-video] [--no-replay]` | Let Steam download its shader caches once, with Shader Pre-Caching off the rest of the time |
+
+### Fetching Steam's caches on demand
+
+Steam only downloads shader caches through its own logged-in client, so `fetch` (also
+under Settings in the GUI) runs it briefly with pre-caching on:
+
+1. Closes Steam and turns Shader Pre-Caching on in `config/config.vdf`.
+2. Starts Steam minimised and follows `logs/content_log.txt` until its shader downloads settle.
+3. Closes Steam, turns pre-caching off again, and starts Steam again if it was open before.
+4. Deletes the video Steam downloaded with the shaders and replays the games it updated.
+
+If the fetch is interrupted, the setting is put back the next time shaderwarm runs while
+Steam is closed. With Steam open, use `shaderwarm fetch --finish` or the GUI's Finish button.
 
 Settings live in `~/.config/shaderwarm/settings.toml`. Your own self-compile overrides
 go in `~/.config/shaderwarm/self-precompile.toml`, in the same format as
@@ -84,6 +98,11 @@ go in `~/.config/shaderwarm/self-precompile.toml`, in the same format as
 - Pre-warming straight from game files isn't implemented yet. The Unreal IoStore and
   shader library readers exist (`shaderwarm inspect <appid>`), but DX12 needs the
   root signatures Unreal builds at runtime.
+- `fetch` can't pick one game: while pre-caching is on, Steam downloads for every
+  installed game, and it may download video again where it was deleted. Steam's
+  pipelines come from Valve's Proton builds. Steam computes no download buckets for
+  Proton-CachyOS, GE or Wineland, so for games on those builds they only partly match.
+  Your own recordings always match.
 - While recording, vkd3d-proton's `VK_EXT_shader_module_identifier` is hidden, because
   together with the recording layer it crashed a UE5 game.
 

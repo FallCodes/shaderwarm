@@ -9,6 +9,8 @@ mod style;
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use iced::alignment::{Horizontal, Vertical};
@@ -20,9 +22,10 @@ use iced::widget::{
 use iced::{event, mouse, window, Alignment, Color, ContentFit, Element, Event, Length, Padding, Size, Subscription, Task};
 
 use anim::Fade;
-use model::{JobEvent, Row, Snapshot};
+use model::{FetchMsg, JobEvent, Row, Snapshot};
 use shaderwarm_core::settings::Settings;
 use shaderwarm_core::state::Staleness;
+use shaderwarm_core::steamfetch::Event as FetchEvent;
 use shapes::{Kind, Slant, DISPLAY};
 use style::{alpha, ACCENT, ALERT, BLACK, GRAPHITE, GREY, INK, PAPER, SMOKE};
 
@@ -104,6 +107,9 @@ enum Btn {
     Confirm,
     Cancel,
     CopyHint,
+    Fetch,
+    CancelFetch,
+    FinishFetch,
 }
 
 /// What a game's tile and panel say about it.
@@ -158,6 +164,17 @@ enum Dialog {
     SelfCompiling { appid: u32, name: String, reason: String },
     /// `appid: None` cleans every game.
     Video { appid: Option<u32>, name: String, bytes: u64 },
+    Fetch { delete_video: bool, replay: bool },
+}
+
+/// A "Fetch from Steam" window in progress.
+struct FetchState {
+    phase: &'static str,
+    /// Games Steam is working on, with what it's doing.
+    active: Vec<(u32, &'static str)>,
+    since: Instant,
+    cancel: Arc<AtomicBool>,
+    replay: bool,
 }
 
 struct JobState {
@@ -188,6 +205,7 @@ struct App {
     filter: Filter,
     selected: Option<u32>,
     job: Option<JobState>,
+    fetch: Option<FetchState>,
     log: Vec<(bool, String)>,
     dialog: Option<Dialog>,
     settings: Settings,
@@ -243,6 +261,13 @@ enum Message {
     IncludeSelfCompiling(bool),
     ReduceMotion(bool),
     AutoReplay(bool),
+    OpenFetch,
+    FetchDeleteVideo(bool),
+    FetchReplay(bool),
+    FetchConfirmed,
+    Fetch(FetchMsg),
+    CancelFetch,
+    FinishFetch,
 }
 
 fn ms(n: u64) -> Duration {
@@ -269,6 +294,7 @@ impl App {
             filter: Filter::All,
             selected: None,
             job: None,
+            fetch: None,
             log: Vec::new(),
             dialog: None,
             threads_input: settings.threads.map(|n| n.to_string()).unwrap_or_default(),
@@ -374,7 +400,7 @@ impl App {
     }
 
     fn busy(&self) -> bool {
-        self.job.is_some()
+        self.job.is_some() || self.fetch.is_some()
     }
 
     fn note(&mut self, result: Result<String, String>) {
@@ -632,6 +658,60 @@ impl App {
                 self.save_settings();
             }
             Message::AutoReplay(on) => return action(move || model::set_auto_replay(on)),
+            Message::OpenFetch => self.dialog = Some(Dialog::Fetch { delete_video: true, replay: true }),
+            Message::FetchDeleteVideo(on) => {
+                if let Some(Dialog::Fetch { delete_video, .. }) = &mut self.dialog {
+                    *delete_video = on;
+                }
+            }
+            Message::FetchReplay(on) => {
+                if let Some(Dialog::Fetch { replay, .. }) = &mut self.dialog {
+                    *replay = on;
+                }
+            }
+            Message::FetchConfirmed => {
+                if let Some(Dialog::Fetch { delete_video, replay }) = self.dialog.take() {
+                    if self.busy() {
+                        return Task::none();
+                    }
+                    let cancel = Arc::new(AtomicBool::new(false));
+                    self.fetch = Some(FetchState { phase: "preparing", active: Vec::new(), since: self.now, cancel: cancel.clone(), replay });
+                    return Task::run(model::spawn_fetch(delete_video, cancel), Message::Fetch);
+                }
+            }
+            Message::Fetch(FetchMsg::Event(event)) => {
+                if let Some(f) = &mut self.fetch {
+                    match event {
+                        FetchEvent::Phase(p) => f.phase = p.describe(),
+                        FetchEvent::Active(apps) => f.active = apps,
+                    }
+                }
+            }
+            Message::Fetch(FetchMsg::Done(result)) => {
+                let replay = self.fetch.take().is_some_and(|f| f.replay);
+                match result {
+                    Ok((updated, summary)) => {
+                        self.note(Ok(summary));
+                        let include = self.settings.include_self_compiling;
+                        let ids: Vec<u32> = updated
+                            .into_iter()
+                            .filter(|id| self.row(*id).is_some_and(|r| include || !r.verdict.self_compiles))
+                            .collect();
+                        if replay && !ids.is_empty() {
+                            return Task::batch([load(), self.start_replay(ids)]);
+                        }
+                    }
+                    Err(e) => self.note(Err(format!("Fetch from Steam: {e}"))),
+                }
+                return load();
+            }
+            Message::CancelFetch => {
+                if let Some(f) = &self.fetch {
+                    f.cancel.store(true, Ordering::Relaxed);
+                    self.note(Ok("Ending the Steam fetch; restoring Steam's settings".into()));
+                }
+            }
+            Message::FinishFetch => return action(model::finish_fetch),
         }
         Task::none()
     }
@@ -832,6 +912,15 @@ impl App {
         if !s.layer_installed {
             lines.push(text("Recording layer not installed: enable it in Settings.").into());
         }
+        if s.interrupted_fetch && self.fetch.is_none() {
+            let finish = self.button(Hot::Btn(Btn::FinishFetch), "Finish", Kind::Primary, 14.0, None, (!self.busy()).then_some(Message::FinishFetch));
+            lines.push(
+                row![text("An interrupted Steam fetch left Shader Pre-Caching on. Finish restarts Steam with it off."), finish]
+                    .spacing(12)
+                    .align_y(Alignment::Center)
+                    .into(),
+            );
+        }
         (!lines.is_empty()).then(|| {
             container(row![Self::tag("Heads up", ACCENT, BLACK, 14.0), Column::with_children(lines).spacing(4)].spacing(14).align_y(Alignment::Center))
                 .padding([10, 16])
@@ -841,7 +930,37 @@ impl App {
         })
     }
 
+    fn fetch_bar(&self, f: &FetchState) -> Element<'_, Message> {
+        let label = if f.active.is_empty() {
+            format!("Steam: {}", f.phase)
+        } else {
+            let games: Vec<String> = f
+                .active
+                .iter()
+                .map(|(id, what)| format!("{what} {}", self.row(*id).map_or_else(|| format!("app {id}"), |r| r.game.name.clone())))
+                .collect();
+            format!("Steam: {}", games.join(", "))
+        };
+        let phase = if self.reduce() { 0.0 } else { self.now.duration_since(self.booted).as_secs_f32() * 42.0 };
+        let bar = canvas(shapes::Stripes { frac: 1.0, phase }).width(Length::Fill).height(16);
+        let minutes = self.now.duration_since(f.since).as_secs() / 60;
+        let stopping = f.cancel.load(Ordering::Relaxed);
+        let cancel = self.button(Hot::Btn(Btn::CancelFetch), "Stop", Kind::Secondary, 14.0, None, (!stopping).then_some(Message::CancelFetch));
+        let head = row![
+            text(label.to_uppercase()).size(16).font(DISPLAY),
+            horizontal_space(),
+            text(format!("{minutes} min")).size(22).font(DISPLAY),
+            cancel,
+        ]
+        .spacing(14)
+        .align_y(Alignment::Center);
+        container(column![head, bar].spacing(8)).padding([12, 16]).width(Length::Fill).style(style::panel).into()
+    }
+
     fn job_bar(&self) -> Option<Element<'_, Message>> {
+        if let Some(f) = &self.fetch {
+            return Some(self.fetch_bar(f));
+        }
         let j = self.job.as_ref()?;
         let frac = if j.total > 0 { j.done as f32 / j.total as f32 } else { 0.0 };
         let label = if j.name.is_empty() {
@@ -894,6 +1013,16 @@ impl App {
                 Self::heading(&format!("{name} compiles its own shaders"), 24.0),
                 text(format!("{reason}. Replaying is probably unnecessary.")).color(GREY),
                 row![confirm("Replay anyway", Some(Message::ReplayConfirmed(*appid))), cancel].spacing(12),
+            ]
+            .spacing(12)
+            .into(),
+            Dialog::Fetch { delete_video, replay } => column![
+                Self::heading("Fetch shader caches from Steam?", 24.0),
+                text("Steam closes, starts minimised with Shader Pre-Caching on until its shader downloads finish, then closes and starts again with it off. Don't launch games meanwhile.").color(GREY),
+                text("Steam downloads for every installed game, video included. Its pipelines come from Valve's Proton builds, so they only partly match games on Proton-CachyOS or GE.").color(GREY),
+                checkbox("Delete the video Steam downloads (Proton-CachyOS/GE don't need it)", *delete_video).on_toggle(Message::FetchDeleteVideo),
+                checkbox("Replay the games Steam updated afterwards", *replay).on_toggle(Message::FetchReplay),
+                row![confirm("Fetch now", Some(Message::FetchConfirmed)), cancel].spacing(12),
             ]
             .spacing(12)
             .into(),
@@ -1037,7 +1166,7 @@ impl App {
         let (fill, ink) = status.colors();
         let explain = match status {
             Status::Ready => "Pipelines you've played are compiled for this driver.".to_string(),
-            Status::NeedsReplay => r.staleness.map_or_else(String::new, |s| format!("{}.", capitalize(s.describe()))),
+            Status::NeedsReplay => r.staleness.map_or_else(String::new, |s| format!("{}.", model::capitalize(s.describe()))),
             Status::NotRecorded => "Play once with the launch option to record its pipelines.".into(),
             Status::SelfCompiles => format!("{}. shaderwarm is probably unnecessary.", r.verdict.reason()),
             Status::NoGpu => "Vulkan reported no hardware device.".into(),
@@ -1170,8 +1299,27 @@ impl App {
             text("Keyboard: arrow keys move through the library, F5 refreshes.").size(13).color(GREY),
         ]
         .spacing(12);
+        let precaching = self.snapshot.as_ref().and_then(|s| s.precaching);
+        let fetch_hint = match precaching {
+            Some(true) => "Steam Shader Pre-Caching is on, so Steam already downloads caches by itself.",
+            None => "Steam's pre-caching setting wasn't found: toggle it once in Steam > Settings > Downloads.",
+            Some(false) => "Opens a short window with Steam Shader Pre-Caching on, so Steam downloads Valve's caches once and the setting stays off otherwise. Steam restarts twice.",
+        };
+        let steam = column![
+            Self::heading("Steam caches", 24.0),
+            text(fetch_hint).size(13).color(GREY),
+            self.button(
+                Hot::Btn(Btn::Fetch),
+                "Fetch from Steam",
+                Kind::Primary,
+                15.0,
+                None,
+                (precaching == Some(false) && !self.busy()).then_some(Message::OpenFetch),
+            ),
+        ]
+        .spacing(12);
         let section = |body| container(body).padding(22).width(Length::Fill).style(style::panel);
-        scrollable(column![section(recording), section(replay), section(interface)].spacing(14).max_width(920)).height(Length::Fill).into()
+        scrollable(column![section(recording), section(replay), section(steam), section(interface)].spacing(14).max_width(920)).height(Length::Fill).into()
     }
 }
 
@@ -1187,10 +1335,6 @@ fn action(f: impl FnOnce() -> Result<String, String> + Send + 'static) -> Task<M
     Task::perform(model::blocking(f), Message::ActionDone)
 }
 
-fn capitalize(s: &str) -> String {
-    let mut c = s.chars();
-    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
-}
 
 fn age(secs: u64) -> String {
     match secs {

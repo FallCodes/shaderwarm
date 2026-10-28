@@ -17,6 +17,7 @@ use shaderwarm_core::record;
 use shaderwarm_core::replay;
 use shaderwarm_core::selfcompile::{self, Verdict};
 use shaderwarm_core::steam::{Game, Steam};
+use shaderwarm_core::steamfetch;
 
 #[derive(Parser)]
 #[command(name = "shaderwarm", version, about = "Pre-compile shaders for Proton games on Linux")]
@@ -62,6 +63,12 @@ enum Command {
         #[arg(long, num_args = 3, value_names = ["CONTAINER", "INDEX", "OUT"])]
         dump: Option<Vec<String>>,
     },
+    /// Let Steam download its shader caches once, keeping Shader Pre-Caching off otherwise.
+    ///
+    /// Closes Steam, turns pre-caching on, starts Steam minimised until its shader downloads
+    /// settle, then closes it, turns pre-caching off and starts it again if it was open.
+    /// Steam fetches for every installed game while the window is open.
+    Fetch(FetchArgs),
     /// Put a backup made by `clean --cache --backup` back in place.
     Restore {
         appid: u32,
@@ -90,6 +97,25 @@ struct CleanArgs {
     /// With --cache: move the caches into a backup instead of deleting them.
     #[arg(long, requires = "cache")]
     backup: bool,
+    /// Don't ask for confirmation.
+    #[arg(long, short)]
+    yes: bool,
+}
+
+#[derive(Args)]
+struct FetchArgs {
+    /// Keep the transcoded video Steam downloads along with the shaders.
+    #[arg(long)]
+    keep_video: bool,
+    /// Don't replay the games Steam updated afterwards.
+    #[arg(long)]
+    no_replay: bool,
+    /// Minutes to wait for Steam before giving up (settings are restored either way).
+    #[arg(long, default_value_t = 180)]
+    timeout: u64,
+    /// Finish a fetch that was interrupted: turn pre-caching back off.
+    #[arg(long, conflicts_with_all = ["keep_video", "no_replay"])]
+    finish: bool,
     /// Don't ask for confirmation.
     #[arg(long, short)]
     yes: bool,
@@ -129,6 +155,11 @@ fn main() -> Result<()> {
         return run(command);
     }
     let steam = Steam::locate()?;
+    match steamfetch::recover(&steam) {
+        Ok(true) => eprintln!("shaderwarm: turned Steam Shader Pre-Caching back off after an interrupted fetch"),
+        Ok(false) => {}
+        Err(e) => eprintln!("shaderwarm: could not finish an interrupted Steam fetch: {e:#}"),
+    }
     match cli.command {
         Command::Run { .. } => unreachable!(),
         Command::Setup { write_units: Some(dir), .. } => {
@@ -145,6 +176,7 @@ fn main() -> Result<()> {
         Command::Clean(args) => clean_cmd(&steam, args),
         Command::Inspect { appid, dump } => inspect(&steam, appid, dump),
         Command::Restore { appid, timestamp } => restore_cmd(&steam, appid, timestamp),
+        Command::Fetch(args) => fetch_cmd(&steam, args),
     }
 }
 
@@ -272,6 +304,9 @@ fn doctor(steam: &Steam) -> Result<()> {
         Some(false) => println!("  pre-caching  off (good: no shader or video downloads)"),
         Some(true) => println!("  pre-caching  ON: Steam downloads shaders and transcoded video; turn it off in Settings > Downloads"),
         None => println!("  pre-caching  unknown (setting not found in config.vdf)"),
+    }
+    if steamfetch::interrupted().is_some() {
+        println!("  fetch        an interrupted Steam fetch left pre-caching on: run `shaderwarm fetch --finish`");
     }
 
     println!("GPU");
@@ -469,6 +504,62 @@ fn replay_cmd(steam: &Steam, args: ReplayArgs) -> Result<()> {
         bail!("{failed} of {} replay(s) failed", games.len());
     }
     Ok(())
+}
+
+fn fetch_cmd(steam: &Steam, args: FetchArgs) -> Result<()> {
+    if args.finish {
+        steamfetch::finish(steam)?;
+        println!("Steam Shader Pre-Caching is off again.");
+        return Ok(());
+    }
+    println!("Steam will be closed, started minimised with Shader Pre-Caching on until its shader");
+    println!("downloads finish, then closed and started again if it was open. Steam downloads for");
+    println!("every installed game, video included; pipelines are recorded with Valve's Proton builds.");
+    if !args.yes && !confirm("Fetch shader caches from Steam now?")? {
+        println!("Cancelled.");
+        return Ok(());
+    }
+    let names: BTreeMap<u32, String> = steam.games().into_iter().map(|g| (g.appid, g.name)).collect();
+    let name = |id: u32| names.get(&id).cloned().unwrap_or_else(|| format!("app {id}"));
+    let opts = steamfetch::Options { timeout: std::time::Duration::from_secs(args.timeout * 60) };
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let report = steamfetch::run(steam, &opts, &cancel, |event| match event {
+        steamfetch::Event::Phase(p) => println!("{}…", capitalize(p.describe())),
+        steamfetch::Event::Active(apps) if apps.is_empty() => println!("  idle"),
+        steamfetch::Event::Active(apps) => {
+            let list: Vec<String> = apps.iter().map(|(id, what)| format!("{} ({what})", name(*id))).collect();
+            println!("  {}", list.join(", "));
+        }
+    })?;
+    println!("{}.", capitalize(report.end.describe()));
+    if report.updated.is_empty() {
+        return Ok(());
+    }
+    let games: Vec<Game> = report.updated.iter().filter_map(|&id| steam.game(id)).collect();
+    println!("Updated: {}", games.iter().map(|g| g.name.as_str()).collect::<Vec<_>>().join(", "));
+    if !args.keep_video {
+        let targets: Vec<Target> = games.iter().flat_map(clean::video_targets).collect();
+        let total: u64 = targets.iter().map(|t| t.size).sum();
+        if total > 0 {
+            clean::remove(&targets, None)?;
+            println!("Deleted {} of Steam video.", format_bytes(total));
+        }
+    }
+    if args.no_replay {
+        return Ok(());
+    }
+    let replay = ReplayArgs {
+        target: ReplayTarget { appid: None, stale: true, all: false },
+        threads: None,
+        include_self_compiling: false,
+        defer_if_gaming: false,
+    };
+    replay_cmd(steam, replay)
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 fn confirm(question: &str) -> Result<bool> {
