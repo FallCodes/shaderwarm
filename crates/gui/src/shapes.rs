@@ -121,7 +121,8 @@ impl<M> canvas::Program<M> for TileDeco {
         // edges of the (rectangular) cover; slanted, it would cross the image unevenly.
         let k = self.hover.max(self.selected);
         if k > 0.0 {
-            let off = 3.0 + 5.0 * k;
+            // Slim: with the cover's lift (see `tile`) the visible edge is ~5 px when selected.
+            let off = 2.0 + 2.0 * k;
             f.fill_rectangle(Point::new(i + off, i + off), Size::new(cw, ch), alpha(if self.selected > 0.0 { ACCENT } else { ACCENT_HI }, k));
         }
         let strip_y = i + ch + 10.0;

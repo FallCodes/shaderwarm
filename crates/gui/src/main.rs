@@ -959,7 +959,7 @@ impl App {
             .width(w)
             .height(h);
         // The cover lifts toward the slab on hover and drops in from below on reveal.
-        let lift = 4.0 * hover.max(selected);
+        let lift = 1.5 * hover.max(selected);
         let drop = (1.0 - reveal) * 26.0;
         let at = |extra_top: f32, extra_left: f32| Padding { top: INSET - lift + drop + extra_top, left: INSET - lift * 0.5 + extra_left, ..Padding::ZERO };
         let status = Status::of(r);
