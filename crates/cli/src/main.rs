@@ -33,8 +33,18 @@ enum Command {
     Status { appid: u32 },
     /// Check the GPU, driver, Fossilize tools and Steam settings.
     Doctor,
-    /// Install the recording layer and print the Steam launch option.
-    Setup,
+    /// Install the recording layer and the auto-replay units; print the launch option.
+    Setup {
+        /// Only install the recording layer, without the systemd user units.
+        #[arg(long)]
+        no_units: bool,
+        /// Remove the recording layer and the systemd user units.
+        #[arg(long, conflicts_with = "no_units")]
+        uninstall: bool,
+        /// Only write the unit files into DIR (nothing is installed or enabled).
+        #[arg(long, value_name = "DIR", conflicts_with_all = ["no_units", "uninstall"])]
+        write_units: Option<PathBuf>,
+    },
     /// Steam launch wrapper: `shaderwarm run -- %command%`.
     Run {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
@@ -107,6 +117,9 @@ struct ReplayArgs {
     /// With --stale/--all: also replay games that compile their own shaders.
     #[arg(long)]
     include_self_compiling: bool,
+    /// Do nothing while any Steam game is running (used by the background service).
+    #[arg(long)]
+    defer_if_gaming: bool,
 }
 
 fn main() -> Result<()> {
@@ -118,7 +131,13 @@ fn main() -> Result<()> {
     let steam = Steam::locate()?;
     match cli.command {
         Command::Run { .. } => unreachable!(),
-        Command::Setup => setup(),
+        Command::Setup { write_units: Some(dir), .. } => {
+            for unit in shaderwarm_core::units::write(&dir, &installed_exe()?)? {
+                println!("Wrote {}", unit.display());
+            }
+            Ok(())
+        }
+        Command::Setup { no_units, uninstall, write_units: None } => setup(no_units, uninstall),
         Command::List => list(&steam),
         Command::Status { appid } => status(&steam, appid),
         Command::Doctor => doctor(&steam),
@@ -281,13 +300,52 @@ fn doctor(steam: &Steam) -> Result<()> {
         Some(path) => println!("  layer        {}", path.display()),
         None => println!("  layer        not installed (run `shaderwarm setup`)"),
     }
+    if shaderwarm_core::units::installed() {
+        println!("  auto-replay  enabled (systemctl --user status shaderwarm-replay.path)");
+    } else {
+        println!("  auto-replay  off (run `shaderwarm setup`)");
+    }
     println!("  recordings   {}", paths::data_dir().join("recordings").display());
     Ok(())
 }
 
-fn setup() -> Result<()> {
+/// The command the units should run: the `shaderwarm` on PATH when there is one, so a
+/// rebuilt or reinstalled binary keeps working, else this executable.
+fn installed_exe() -> Result<PathBuf> {
+    let on_path = std::env::var_os("PATH")
+        .iter()
+        .flat_map(std::env::split_paths)
+        .map(|d| d.join("shaderwarm"))
+        .find(|p| p.is_file());
+    match on_path {
+        Some(p) => Ok(p),
+        None => std::env::current_exe().context("locating the shaderwarm executable"),
+    }
+}
+
+fn setup(no_units: bool, uninstall: bool) -> Result<()> {
+    use shaderwarm_core::units;
+
+    if uninstall {
+        units::uninstall()?;
+        if let Some(manifest) = fossilize::layer_manifest() {
+            std::fs::remove_file(&manifest).with_context(|| format!("removing {}", manifest.display()))?;
+        }
+        println!("Removed the recording layer and the auto-replay units.");
+        println!("Recordings and caches are kept; remove `shaderwarm run --` from your launch options.");
+        return Ok(());
+    }
+
     let manifest = record::install_layer_manifest()?;
     println!("Installed recording layer: {}", manifest.display());
+    if !no_units {
+        let exe = installed_exe()?;
+        for unit in units::install(&exe)? {
+            println!("Installed {}", unit.display());
+        }
+        println!("Auto-replay enabled: after GPU driver or Proton updates, and hourly, stale games are");
+        println!("replayed at idle priority (never while a game is running).");
+    }
     println!();
     println!("Set this as the Steam launch option of each game you want to record:");
     println!("    shaderwarm run -- %command%");
@@ -354,6 +412,13 @@ fn compact_then_record_env(appid: u32) -> Result<Vec<(String, String)>> {
 }
 
 fn replay_cmd(steam: &Steam, args: ReplayArgs) -> Result<()> {
+    if args.defer_if_gaming {
+        let running = clean::running_games(std::path::Path::new("/proc"));
+        if !running.is_empty() {
+            println!("A game is running ({running:?}); deferring replay.");
+            return Ok(());
+        }
+    }
     let gpu = primary_gpu()?;
     let threads = args
         .threads

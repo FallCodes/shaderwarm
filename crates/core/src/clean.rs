@@ -108,6 +108,22 @@ fn is_tool(steam: &Steam, appid: &str) -> bool {
     steam.libraries.iter().any(|lib| lib.join(format!("steamapps/appmanifest_{appid}.acf")).is_file())
 }
 
+/// Calls `f` with each other process's pid and NUL-separated environment.
+fn for_each_process(proc_root: &Path, mut f: impl FnMut(u32, &Path, &[u8])) {
+    let Ok(entries) = fs::read_dir(proc_root) else { return };
+    for entry in entries.flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
+        if pid == std::process::id() {
+            continue;
+        }
+        if let Ok(environ) = fs::read(entry.path().join("environ")) {
+            f(pid, &entry.path(), &environ);
+        }
+    }
+}
+
 /// Processes that use the game's caches: the game itself (Steam exports its app id to
 /// every child) or a replay/warm job writing to its shader cache.
 pub fn users_of(proc_root: &Path, game: &Game) -> Vec<(u32, String)> {
@@ -116,29 +132,36 @@ pub fn users_of(proc_root: &Path, game: &Game) -> Vec<(u32, String)> {
         format!("STEAM_COMPAT_APP_ID={}", game.appid),
     ];
     let cache_var = format!("MESA_SHADER_CACHE_DIR={}", game.shadercache().display());
-    let Ok(entries) = fs::read_dir(proc_root) else {
-        return Vec::new();
-    };
     let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
-            continue;
-        };
-        if pid == std::process::id() {
-            continue;
-        }
-        let Ok(environ) = fs::read(entry.path().join("environ")) else { continue };
+    for_each_process(proc_root, |pid, dir, environ| {
         let uses = environ.split(|&b| b == 0).any(|var| {
             let var = String::from_utf8_lossy(var);
             appid_vars.iter().any(|v| *v == var) || var == cache_var
         });
         if uses {
-            let comm = fs::read_to_string(entry.path().join("comm")).unwrap_or_default();
+            let comm = fs::read_to_string(dir.join("comm")).unwrap_or_default();
             out.push((pid, comm.trim().to_string()));
         }
-    }
+    });
     out.sort();
     out
+}
+
+/// App ids of Steam games that are running now.
+pub fn running_games(proc_root: &Path) -> Vec<u32> {
+    let mut ids = Vec::new();
+    for_each_process(proc_root, |_, _, environ| {
+        for var in environ.split(|&b| b == 0) {
+            let var = String::from_utf8_lossy(var);
+            let id = var.strip_prefix("SteamAppId=").or_else(|| var.strip_prefix("STEAM_COMPAT_APP_ID="));
+            if let Some(id) = id.and_then(|v| v.parse::<u32>().ok()).filter(|&id| id != 0) {
+                ids.push(id);
+            }
+        }
+    });
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 /// Deletes the targets, or moves them into a new backup when `backup_for` names the game.
@@ -315,6 +338,7 @@ mod tests {
 
         let users = users_of(&proc_root, &g);
         assert_eq!(users, [(100, "Game.exe".to_string()), (102, "fossilize-repl".to_string())]);
+        assert_eq!(running_games(&proc_root), [42, 420]);
     }
 
     #[test]

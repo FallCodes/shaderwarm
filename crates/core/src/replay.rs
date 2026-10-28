@@ -185,7 +185,9 @@ fn low_priority_command() -> Command {
             .any(|d| d.join(bin).is_file())
     };
     let mut prefix: Vec<&str> = Vec::new();
-    if have("systemd-run") && std::env::var_os("XDG_RUNTIME_DIR").is_some() {
+    // Under the shaderwarm service (INVOCATION_ID set) the unit already limits memory.
+    let under_systemd = std::env::var_os("INVOCATION_ID").is_some();
+    if !under_systemd && have("systemd-run") && std::env::var_os("XDG_RUNTIME_DIR").is_some() {
         prefix.extend(["systemd-run", "--user", "--scope", "--quiet", "-p", "MemoryHigh=60%"]);
     }
     if have("ionice") {

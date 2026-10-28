@@ -15,4 +15,5 @@ pub mod selfcompile;
 pub mod state;
 pub mod steam;
 pub mod ue;
+pub mod units;
 pub mod vdf;
