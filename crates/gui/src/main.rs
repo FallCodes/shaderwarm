@@ -941,8 +941,7 @@ impl App {
                 .collect();
             format!("Steam: {}", games.join(", "))
         };
-        let phase = if self.reduce() { 0.0 } else { self.now.duration_since(self.booted).as_secs_f32() * 42.0 };
-        let bar = canvas(shapes::Stripes { frac: 1.0, phase }).width(Length::Fill).height(16);
+        // No progress bar: Steam's log doesn't say how much is left. The bar is for compiling.
         let minutes = self.now.duration_since(f.since).as_secs() / 60;
         let stopping = f.cancel.load(Ordering::Relaxed);
         let cancel = self.button(Hot::Btn(Btn::CancelFetch), "Stop", Kind::Secondary, 14.0, None, (!stopping).then_some(Message::CancelFetch));
@@ -954,7 +953,7 @@ impl App {
         ]
         .spacing(14)
         .align_y(Alignment::Center);
-        container(column![head, bar].spacing(8)).padding([12, 16]).width(Length::Fill).style(style::panel).into()
+        container(head).padding([12, 16]).width(Length::Fill).style(style::panel).into()
     }
 
     fn job_bar(&self) -> Option<Element<'_, Message>> {
