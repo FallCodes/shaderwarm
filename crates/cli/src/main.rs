@@ -420,9 +420,9 @@ fn replay_cmd(steam: &Steam, args: ReplayArgs) -> Result<()> {
         }
     }
     let gpu = primary_gpu()?;
-    let threads = args
-        .threads
-        .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()));
+    let settings = shaderwarm_core::settings::Settings::load();
+    let threads = args.threads.unwrap_or_else(|| settings.effective_threads());
+    let include_self_compiling = args.include_self_compiling || settings.include_self_compiling;
     let db = selfcompile::Database::load()?;
     let games: Vec<Game> = match args.target.appid {
         Some(appid) => {
@@ -439,7 +439,7 @@ fn replay_cmd(steam: &Steam, args: ReplayArgs) -> Result<()> {
             .filter(|g| {
                 let s = replay::staleness(g, &gpu);
                 let wanted = if args.target.stale { s.needs_replay() } else { !replay::inputs(g).is_empty() };
-                wanted && (args.include_self_compiling || !verdict(&db, g).self_compiles)
+                wanted && (include_self_compiling || !verdict(&db, g).self_compiles)
             })
             .collect(),
     };

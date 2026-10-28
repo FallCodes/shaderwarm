@@ -12,6 +12,7 @@ pub mod paths;
 pub mod record;
 pub mod replay;
 pub mod selfcompile;
+pub mod settings;
 pub mod state;
 pub mod steam;
 pub mod ue;

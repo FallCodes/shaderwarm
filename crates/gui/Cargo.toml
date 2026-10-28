@@ -1,0 +1,11 @@
+[package]
+name = "shaderwarm-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+iced = "=0.13.1"
+shaderwarm-core.workspace = true
