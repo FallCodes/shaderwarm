@@ -39,6 +39,7 @@ sudo pacman -S --needed rustup cmake ninja
 ./scripts/build-fossilize.sh
 cargo build --release
 ln -s "$PWD/target/release/shaderwarm" "$PWD/target/release/shaderwarm-gui" ~/.local/bin/
+./scripts/install-desktop.sh   # app-menu entry and icon (undo: --uninstall)
 ```
 
 Then:
@@ -64,7 +65,7 @@ sets variables and cannot run commands.
 
 | Command | What it does |
 |---|---|
-| `shaderwarm-gui` | Desktop UI: status, replay, cleanup, settings |
+| `shaderwarm-gui` | Desktop UI: a library of your games' Steam covers with cache status, a detail panel per game (hero art, cache composition, actions), replay with progress, cleanup and settings |
 | `shaderwarm list` | Games with cache size, video size and status |
 | `shaderwarm status <appid>` | Engine, Proton, caches, recordings, last launch |
 | `shaderwarm replay <appid>` / `--stale` / `--all` | Compile recordings into the cache |

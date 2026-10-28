@@ -7,7 +7,7 @@ pkgdesc="Record and pre-compile Vulkan pipelines for Proton games"
 arch=('x86_64')
 url="https://github.com/ValveSoftware/Fossilize"
 license=('GPL-3.0-or-later' 'MIT')
-depends=('gcc-libs' 'glibc' 'vulkan-icd-loader' 'systemd' 'util-linux' 'libxkbcommon' 'wayland')
+depends=('hicolor-icon-theme' 'gcc-libs' 'glibc' 'vulkan-icd-loader' 'systemd' 'util-linux' 'libxkbcommon' 'wayland')
 makedepends=('cargo' 'cmake' 'ninja' 'git' 'python')
 _fossilize_commit=556da9ff7d7616704dda515756219ab1dab693ec
 source=("fossilize::git+https://github.com/ValveSoftware/Fossilize.git#commit=${_fossilize_commit}")
@@ -54,6 +54,8 @@ package() {
     install -Dm755 build-fossilize/cli/fossilize-merge-db "$pkgdir/usr/lib/shaderwarm/fossilize-merge-db"
     install -Dm755 build-fossilize/layer/libVkLayer_fossilize.so "$pkgdir/usr/lib/shaderwarm/libVkLayer_fossilize.so"
     install -Dm644 "$tree/packaging/shaderwarm.desktop" "$pkgdir/usr/share/applications/shaderwarm.desktop"
+    install -Dm644 "$tree/assets/shaderwarm.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/shaderwarm.svg"
+    install -Dm644 "$tree/assets/shaderwarm-256.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/shaderwarm.png"
     install -Dm644 "$tree/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 fossilize/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE.fossilize"
 }

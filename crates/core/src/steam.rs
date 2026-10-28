@@ -150,6 +150,81 @@ impl Game {
     }
 }
 
+/// Library artwork Steam has cached for a game. Any of it may be missing.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Artwork {
+    /// Portrait 600x900 capsule.
+    pub cover: Option<PathBuf>,
+    /// Wide banner shown behind the game page.
+    pub hero: Option<PathBuf>,
+    /// Transparent title logo drawn over the hero.
+    pub logo: Option<PathBuf>,
+    /// 460x215 landscape header, the fallback when there's no cover.
+    pub header: Option<PathBuf>,
+}
+
+impl Steam {
+    pub fn artwork(&self, appid: u32) -> Artwork {
+        artwork_in(&self.root.join("appcache/librarycache"), appid)
+    }
+}
+
+/// Steam keeps artwork in `librarycache/<appid>/`, either as named files or inside
+/// hash-named subfolders; older clients used flat `<appid>_library_600x900.jpg` names.
+fn artwork_in(cache: &Path, appid: u32) -> Artwork {
+    let dir = cache.join(appid.to_string());
+    let mut found: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                found.extend(fs::read_dir(&path).into_iter().flatten().flatten().map(|f| f.path()));
+            } else {
+                found.push(path);
+            }
+        }
+    }
+    let pick = |names: &[&str]| {
+        names.iter().find_map(|name| {
+            found
+                .iter()
+                .find(|p| p.file_name().is_some_and(|n| n == *name))
+                .cloned()
+                .or_else(|| Some(cache.join(format!("{appid}_{name}"))).filter(|p| p.is_file()))
+        })
+    };
+    Artwork {
+        cover: pick(&["library_600x900.jpg", "library_capsule.jpg"]),
+        hero: pick(&["library_hero.jpg"]),
+        logo: pick(&["logo.png"]),
+        header: pick(&["library_header.jpg", "header.jpg"]),
+    }
+}
+
+#[cfg(test)]
+mod artwork_tests {
+    use super::*;
+
+    #[test]
+    fn finds_named_hashed_and_flat_artwork() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = tmp.path();
+        fs::create_dir_all(c.join("1/abc")).unwrap();
+        fs::write(c.join("1/library_hero.jpg"), b"").unwrap();
+        fs::write(c.join("1/abc/library_capsule.jpg"), b"").unwrap();
+        fs::write(c.join("1/abc/logo.png"), b"").unwrap();
+        fs::write(c.join("2_library_600x900.jpg"), b"").unwrap();
+
+        let a = artwork_in(c, 1);
+        assert_eq!(a.cover, Some(c.join("1/abc/library_capsule.jpg")));
+        assert_eq!(a.hero, Some(c.join("1/library_hero.jpg")));
+        assert_eq!(a.logo, Some(c.join("1/abc/logo.png")));
+        assert_eq!(a.header, None);
+        assert_eq!(artwork_in(c, 2).cover, Some(c.join("2_library_600x900.jpg")));
+        assert_eq!(artwork_in(c, 3), Artwork::default());
+    }
+}
+
 /// `config_info` is line-based: the tool name first, then paths inside the Proton
 /// install (fonts, libs, default prefix) and a few flags.
 fn parse_config_info(text: &str) -> Option<ProtonInfo> {

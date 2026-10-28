@@ -15,7 +15,9 @@ use shaderwarm_core::record;
 use shaderwarm_core::replay;
 use shaderwarm_core::selfcompile::{self, Verdict};
 use shaderwarm_core::state::Staleness;
-use shaderwarm_core::steam::{Game, Steam};
+use shaderwarm_core::fsutil::tree_size;
+use shaderwarm_core::paths;
+use shaderwarm_core::steam::{Artwork, Game, Steam};
 use shaderwarm_core::units;
 
 pub const LAUNCH_OPTION: &str = "shaderwarm run -- %command%";
@@ -36,6 +38,9 @@ pub struct Row {
     pub proton: String,
     pub shaders: u64,
     pub video: u64,
+    pub breakdown: cache::CacheBreakdown,
+    pub recordings: u64,
+    pub art: Artwork,
     pub staleness: Option<Staleness>,
     pub verdict: Verdict,
     pub backups: usize,
@@ -78,6 +83,9 @@ pub fn load() -> Result<Snapshot, String> {
                 proton: game.proton().map(|p| p.name).unwrap_or_else(|| "native".into()),
                 shaders: b.shaders(),
                 video: b.video,
+                recordings: tree_size(&paths::recordings_dir(game.appid)),
+                art: steam.artwork(game.appid),
+                breakdown: b,
                 staleness: primary.as_ref().map(|g| replay::staleness(&game, g)),
                 backups: clean::backups(game.appid).len(),
                 last_launch,
@@ -171,6 +179,15 @@ pub fn restore_latest(appid: u32) -> Result<String, String> {
         clean::restore(appid, &dir)?;
         Ok(format!("{}: restored backup {stamp}", game.name))
     })
+}
+
+/// Deletes Steam's transcoded video for every installed game.
+pub fn clean_all_video() -> Result<String, String> {
+    let steam = Steam::locate().map_err(err)?;
+    let targets: Vec<_> = steam.games().iter().flat_map(clean::video_targets).collect();
+    let total: u64 = targets.iter().map(|t| t.size).sum();
+    clean::remove(&targets, None).map_err(err)?;
+    Ok(format!("Freed {} of Steam video", size(total)))
 }
 
 pub fn clean_video(appid: u32) -> Result<String, String> {
