@@ -317,9 +317,18 @@ impl<M> canvas::Program<M> for Title {
     }
 }
 
+/// Integer hash (lowbias32), for stable pseudo-random particle placement.
+fn hash(mut x: u32) -> u32 {
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7feb_352d);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846c_a68b);
+    x ^ (x >> 16)
+}
+
 /// Backdrop: a cached static layer (black and a halftone fade) under diagonal accent
-/// bands that drift slowly with `phase` (seconds). The moving layer is a handful of
-/// polygons, so redrawing it every frame is cheap.
+/// bands and dust that drift slowly with `phase` (seconds). The moving layer is a few
+/// dozen small shapes, so redrawing it every frame is cheap.
 pub struct Backdrop<'a> {
     pub cache: &'a canvas::Cache,
     pub phase: f32,
@@ -369,12 +378,21 @@ impl<M> canvas::Program<M> for Backdrop<'_> {
             f.fill(&band(base + w * 0.86, w * 0.07), alpha(ACCENT, 0.03));
             f.fill(&band(base + w * 0.30, 2.0), alpha(PAPER, 0.06));
         }
-        // Faster thin streaks for a sense of speed.
-        let streak_period = w + lean;
-        for (i, speed, y_frac) in [(0, 90.0, 0.18), (1, 130.0, 0.52), (2, 70.0, 0.81)] {
-            let x = (self.phase * speed + i as f32 * 400.0) % streak_period - lean * 0.2;
-            let y = h * y_frac;
-            f.fill(&slant(x, y, 140.0, 3.0, 2.0), alpha(ACCENT, 0.10));
+        // Dust: specks drifting up along the bands' diagonal with a slight wobble and
+        // twinkle. Positions come from a fixed hash, so particles are stable frame to frame
+        // and wrap around the window.
+        let (dx, dy) = (lean / (lean * lean + h * h).sqrt(), -h / (lean * lean + h * h).sqrt());
+        for i in 0..45u32 {
+            let rnd = |salt: u32| (hash(i.wrapping_mul(2654435761) ^ salt) % 10_000) as f32 / 10_000.0;
+            let speed = 6.0 + 16.0 * rnd(1);
+            let travel = self.phase * speed;
+            let wobble = (self.phase * (0.4 + rnd(2)) + rnd(3) * std::f32::consts::TAU).sin() * 6.0;
+            let x = (rnd(4) * w + travel * dx + wobble).rem_euclid(w);
+            let y = (rnd(5) * h + travel * dy).rem_euclid(h);
+            let size = 1.0 + 2.2 * rnd(6);
+            let twinkle = 0.55 + 0.45 * (self.phase * (0.8 + rnd(7)) + rnd(8) * std::f32::consts::TAU).sin();
+            let color = if rnd(9) < 0.25 { ACCENT } else { PAPER };
+            f.fill(&Path::circle(Point::new(x, y), size), alpha(color, (0.05 + 0.13 * rnd(10)) * twinkle));
         }
         vec![still, f.into_geometry()]
     }
