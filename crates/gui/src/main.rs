@@ -664,6 +664,30 @@ impl App {
             .into()
     }
 
+    /// Grey info tags laid out in as many rows as `max_width` needs (iced 0.13 rows
+    /// don't wrap on their own).
+    fn tag_rows(labels: &[String], size: f32, max_width: f32) -> Element<'static, Message> {
+        const SPACING: f32 = 4.0;
+        let mut rows: Vec<Vec<&String>> = vec![Vec::new()];
+        let mut used = 0.0;
+        for label in labels {
+            let w = shapes::button_width(label, size) - size * 0.6;
+            let row = rows.last_mut().expect("starts with one row");
+            if !row.is_empty() && used + SPACING + w > max_width {
+                rows.push(vec![label]);
+                used = w;
+            } else {
+                used += if row.is_empty() { w } else { SPACING + w };
+                row.push(label);
+            }
+        }
+        Column::with_children(rows.into_iter().map(|row| {
+            WRow::with_children(row.into_iter().map(|l| Self::tag(l, GRAPHITE, PAPER, size))).spacing(SPACING).into()
+        }))
+        .spacing(SPACING)
+        .into()
+    }
+
     fn heading(label: &str, size: f32) -> iced::widget::Text<'static> {
         text(label.to_uppercase()).size(size).font(DISPLAY).color(PAPER)
     }
@@ -992,7 +1016,8 @@ impl App {
             None => container(Space::new(Length::Fill, HERO_H)).style(style::fill(GRAPHITE)).into(),
         };
         let logo: Element<_> = match &r.art.logo {
-            Some(p) => image(image::Handle::from_path(p)).height(84).content_fit(ContentFit::Contain).into(),
+            // Bounded on both axes: wide logos shrink to the panel instead of being clipped.
+            Some(p) => image(image::Handle::from_path(p)).width(Length::Fill).height(84).content_fit(ContentFit::Contain).into(),
             None => Self::heading(&r.game.name, 34.0).into(),
         };
         let mut banner = stack![
@@ -1004,12 +1029,7 @@ impl App {
             banner = banner.push(canvas(shapes::Wipe::hero(wipe)).width(Length::Fill).height(HERO_H));
         }
 
-        let chips = row![
-            Self::tag(&r.engine, GRAPHITE, PAPER, 12.0),
-            Self::tag(&r.proton, GRAPHITE, PAPER, 12.0),
-            Self::tag(&format!("App {}", r.game.appid), GRAPHITE, PAPER, 12.0),
-        ]
-        .spacing(4);
+        let chips = Self::tag_rows(&[r.engine.clone(), r.proton.clone(), format!("App {}", r.game.appid)], 12.0, PANEL_W - 40.0);
 
         let (fill, ink) = status.colors();
         let explain = match status {
