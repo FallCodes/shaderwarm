@@ -22,6 +22,7 @@ const VERSION_PERFECT_HASH_OVERFLOW: u8 = 5;
 
 /// `EIoChunkType` values we care about (UE5 numbering).
 pub mod chunk_type {
+    pub const CONTAINER_HEADER: u8 = 6;
     pub const SHADER_CODE_LIBRARY: u8 = 8;
     pub const SHADER_CODE: u8 = 9;
 }

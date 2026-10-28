@@ -14,6 +14,9 @@ clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 ash = "0.38"
 oozextract = "0.5"
+memchr = "2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 shaderwarm-core = { path = "crates/core" }
 
 [profile.release]

@@ -7,6 +7,7 @@ use clap::{Args, Parser, Subcommand};
 
 use shaderwarm_core::cache;
 use shaderwarm_core::clean::{self, PurgeOptions, Target};
+use shaderwarm_core::engine;
 use shaderwarm_core::fossilize;
 use shaderwarm_core::fsutil::{format_bytes, tree_size};
 use shaderwarm_core::gpu::{self, Gpu};
@@ -14,6 +15,7 @@ use shaderwarm_core::launch::{self, LaunchEnv};
 use shaderwarm_core::paths;
 use shaderwarm_core::record;
 use shaderwarm_core::replay;
+use shaderwarm_core::selfcompile::{self, Verdict};
 use shaderwarm_core::steam::{Game, Steam};
 
 #[derive(Parser)]
@@ -102,6 +104,9 @@ struct ReplayArgs {
     /// Compile threads (default: all cores; replay runs at idle priority).
     #[arg(long)]
     threads: Option<usize>,
+    /// With --stale/--all: also replay games that compile their own shaders.
+    #[arg(long)]
+    include_self_compiling: bool,
 }
 
 fn main() -> Result<()> {
@@ -133,6 +138,10 @@ fn find_game(steam: &Steam, appid: u32) -> Result<Game> {
     steam.game(appid).with_context(|| format!("app {appid} is not an installed game"))
 }
 
+fn verdict(db: &selfcompile::Database, game: &Game) -> Verdict {
+    db.assess(game, &engine::detect_cached(game.appid, &game.install_dir))
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -144,6 +153,7 @@ fn truncate(s: &str, max: usize) -> String {
 
 fn list(steam: &Steam) -> Result<()> {
     let gpu = primary_gpu().ok();
+    let db = selfcompile::Database::load()?;
     println!(
         "{:>8}  {:<32}  {:<26}  {:>10}  {:>10}  STATUS",
         "APPID", "NAME", "PROTON", "SHADERS", "VIDEO"
@@ -151,7 +161,11 @@ fn list(steam: &Steam) -> Result<()> {
     for game in steam.games() {
         let b = cache::breakdown(&game.shadercache());
         let proton = game.proton().map(|p| p.name).unwrap_or_else(|| "-".into());
-        let status = gpu.as_ref().map_or("unknown GPU", |g| replay::staleness(&game, g).describe());
+        let status = if verdict(&db, &game).self_compiles {
+            "self-compiles: shaderwarm probably unnecessary"
+        } else {
+            gpu.as_ref().map_or("unknown GPU", |g| replay::staleness(&game, g).describe())
+        };
         println!(
             "{:>8}  {:<32}  {:<26}  {:>10}  {:>10}  {status}",
             game.appid,
@@ -168,6 +182,14 @@ fn status(steam: &Steam, appid: u32) -> Result<()> {
     let game = find_game(steam, appid)?;
     println!("{} ({})", game.name, game.appid);
     println!("  install      {}", game.install_dir.display());
+    let engine = engine::detect_cached(appid, &game.install_dir);
+    println!("  engine       {engine}");
+    let v = selfcompile::Database::load()?.assess(&game, &engine);
+    match (v.self_compiles, v.ue5_exempt) {
+        (true, _) => println!("  self-compile yes: {}. shaderwarm is probably unnecessary", v.reason()),
+        (false, true) => println!("  self-compile no ({})", v.reason()),
+        (false, false) => println!("  self-compile no"),
+    }
     match game.proton() {
         Some(p) => println!(
             "  proton       {} ({})",
@@ -336,14 +358,23 @@ fn replay_cmd(steam: &Steam, args: ReplayArgs) -> Result<()> {
     let threads = args
         .threads
         .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()));
+    let db = selfcompile::Database::load()?;
     let games: Vec<Game> = match args.target.appid {
-        Some(appid) => vec![find_game(steam, appid)?],
+        Some(appid) => {
+            let game = find_game(steam, appid)?;
+            let v = verdict(&db, &game);
+            if v.self_compiles {
+                println!("Note: {} compiles its own shaders ({}); replaying anyway.", game.name, v.reason());
+            }
+            vec![game]
+        }
         None => steam
             .games()
             .into_iter()
             .filter(|g| {
                 let s = replay::staleness(g, &gpu);
-                if args.target.stale { s.needs_replay() } else { !replay::inputs(g).is_empty() }
+                let wanted = if args.target.stale { s.needs_replay() } else { !replay::inputs(g).is_empty() };
+                wanted && (args.include_self_compiling || !verdict(&db, g).self_compiles)
             })
             .collect(),
     };

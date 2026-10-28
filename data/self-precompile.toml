@@ -1,0 +1,38 @@
+# Games that compile their own shaders/pipelines up front (on first launch, at startup or
+# on a loading screen), so shaderwarm adds little for them.
+#
+# Unreal Engine 5 games never belong here: UE5's PSO precaching misses most pipelines,
+# so they still benefit from recording and replay.
+#
+# Override or extend this list in ~/.config/shaderwarm/self-precompile.toml with the
+# same format; `self_compiles = false` un-flags a game listed here.
+
+[[game]]
+appid = 1151640
+name = "Horizon Zero Dawn"
+note = "Compiles shaders at startup and in the main menu."
+
+[[game]]
+appid = 2420110
+name = "Horizon Forbidden West Complete Edition"
+note = "Compiles shaders at startup and in the main menu."
+
+[[game]]
+appid = 1888930
+name = "The Last of Us Part I"
+note = "Builds shaders on first launch before gameplay."
+
+[[game]]
+appid = 2215430
+name = "Ghost of Tsushima DIRECTOR'S CUT"
+note = "Compiles shaders at startup."
+
+[[game]]
+appid = 990080
+name = "Hogwarts Legacy"
+note = "Compiles shaders on first launch (UE4)."
+
+[[game]]
+appid = 1938090
+name = "Call of Duty"
+note = "Shader preloading on first launch."
