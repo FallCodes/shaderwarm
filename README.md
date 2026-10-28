@@ -98,11 +98,6 @@ go in `~/.config/shaderwarm/self-precompile.toml`, in the same format as
 - Pre-warming straight from game files isn't implemented yet. The Unreal IoStore and
   shader library readers exist (`shaderwarm inspect <appid>`), but DX12 needs the
   root signatures Unreal builds at runtime.
-- `fetch` can't pick one game: while pre-caching is on, Steam downloads for every
-  installed game, and it may download video again where it was deleted. Steam's
-  pipelines come from Valve's Proton builds. Steam computes no download buckets for
-  Proton-CachyOS, GE or Wineland, so for games on those builds they only partly match.
-  Your own recordings always match.
 - While recording, vkd3d-proton's `VK_EXT_shader_module_identifier` is hidden, because
   together with the recording layer it crashed a UE5 game.
 
