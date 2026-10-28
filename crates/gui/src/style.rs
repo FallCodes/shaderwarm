@@ -1,6 +1,6 @@
-//! Palette and widget styles. Ink black, paper white and one hard red, with yellow kept
-//! for a single meaning (games that compile their own shaders). Corners are sharp;
-//! slanted shapes come from `shapes`.
+//! Palette and widget styles. Ink black, paper white and one hard yellow accent; a red
+//! is kept only for errors and freeable waste. Corners are sharp; slanted shapes come
+//! from `shapes`.
 
 use iced::widget::{container, text_input};
 use iced::{Border, Color, Theme};
@@ -20,11 +20,12 @@ pub const SMOKE: Color = rgb(0x3a3a40);
 /// Secondary text: 7:1 on BLACK.
 pub const GREY: Color = rgb(0x9a9a9e);
 pub const PAPER: Color = rgb(0xf2efe6);
-/// Text-safe red: PAPER on RED and RED on BLACK at large sizes both pass contrast.
-pub const RED: Color = rgb(0xd10a24);
-/// Brighter red for shapes only, never for text.
-pub const RED_HI: Color = rgb(0xff2a3d);
-pub const YELLOW: Color = rgb(0xffd60a);
+/// The accent. BLACK text on it and ACCENT text on BLACK both exceed 12:1.
+pub const ACCENT: Color = rgb(0xffd60a);
+/// Lighter accent for shapes and shadows.
+pub const ACCENT_HI: Color = rgb(0xffe866);
+/// Errors and freeable waste only.
+pub const ALERT: Color = rgb(0xe5484d);
 
 pub fn alpha(c: Color, a: f32) -> Color {
     Color { a, ..c }
@@ -38,7 +39,7 @@ pub fn mix(a: Color, b: Color, t: f32) -> Color {
 pub fn theme() -> Theme {
     Theme::custom(
         "shaderwarm".to_string(),
-        iced::theme::Palette { background: BLACK, text: PAPER, primary: RED, success: PAPER, danger: RED },
+        iced::theme::Palette { background: BLACK, text: PAPER, primary: ACCENT, success: PAPER, danger: ALERT },
     )
 }
 
@@ -54,9 +55,9 @@ pub fn well(_: &Theme) -> container::Style {
     container::Style { background: Some(BLACK.into()), border: sharp(GRAPHITE, 1.0), ..container::Style::default() }
 }
 
-/// Dialogs and warnings: black with a hard red frame.
+/// Dialogs and warnings: black with a hard accent frame.
 pub fn alert(_: &Theme) -> container::Style {
-    container::Style { background: Some(BLACK.into()), border: sharp(RED, 3.0), ..container::Style::default() }
+    container::Style { background: Some(BLACK.into()), border: sharp(ACCENT, 3.0), ..container::Style::default() }
 }
 
 /// A plain fill, used for reveal curtains and fades.
@@ -85,6 +86,6 @@ pub fn search(_: &Theme, status: text_input::Status) -> text_input::Style {
         icon: GREY,
         placeholder: GREY,
         value: PAPER,
-        selection: alpha(RED, 0.6),
+        selection: alpha(ACCENT, 0.45),
     }
 }

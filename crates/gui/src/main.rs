@@ -17,14 +17,14 @@ use iced::widget::{
     canvas, checkbox, column, container, horizontal_space, image, mouse_area, responsive, row, scrollable, stack,
     svg, text, text_input, toggler, Column, Row as WRow, Space,
 };
-use iced::{mouse, window, Alignment, Color, ContentFit, Element, Length, Padding, Size, Subscription, Task};
+use iced::{event, mouse, window, Alignment, Color, ContentFit, Element, Event, Length, Padding, Size, Subscription, Task};
 
 use anim::Fade;
 use model::{JobEvent, Row, Snapshot};
 use shaderwarm_core::settings::Settings;
 use shaderwarm_core::state::Staleness;
 use shapes::{Kind, Slant, DISPLAY};
-use style::{alpha, BLACK, GRAPHITE, GREY, INK, PAPER, RED, SMOKE, YELLOW};
+use style::{alpha, ACCENT, ALERT, BLACK, GRAPHITE, GREY, INK, PAPER, SMOKE};
 
 const ICON_SVG: &[u8] = include_bytes!("../../../assets/shaderwarm.svg");
 const ICON_PNG: &[u8] = include_bytes!("../../../assets/shaderwarm-256.png");
@@ -41,6 +41,7 @@ const TILE_IN: u64 = 260;
 const PANEL_IN: u64 = 380;
 const WIPE: u64 = 520;
 const COUNT_UP: u64 = 650;
+const TAB_WIPE: u64 = 560;
 
 pub fn main() -> iced::Result {
     let window = window::Settings {
@@ -53,6 +54,8 @@ pub fn main() -> iced::Result {
     };
     iced::application("shaderwarm", App::update, App::view)
         .theme(|_| style::theme())
+        // MSAA: without it the slanted canvas edges are visibly stair-stepped.
+        .antialiasing(true)
         .font(ANTON)
         .subscription(App::subscription)
         .window(window)
@@ -135,9 +138,10 @@ impl Status {
     fn colors(self) -> (Color, Color) {
         match self {
             Status::Ready => (PAPER, BLACK),
-            Status::NeedsReplay | Status::NoGpu => (RED, PAPER),
+            Status::NeedsReplay => (ACCENT, BLACK),
+            Status::NoGpu => (ALERT, PAPER),
             Status::NotRecorded => (SMOKE, PAPER),
-            Status::SelfCompiles => (YELLOW, BLACK),
+            Status::SelfCompiles => (BLACK, ACCENT),
         }
     }
 }
@@ -162,7 +166,13 @@ struct App {
     snapshot: Option<Snapshot>,
     load_error: Option<String>,
     loading: bool,
+    /// The tab on screen; `tab_target` is where a transition is heading.
     tab: Tab,
+    tab_target: Tab,
+    tab_since: Instant,
+    /// +1 when moving right (to Settings), -1 when moving left.
+    tab_dir: f32,
+    focused: bool,
     search: String,
     filter: Filter,
     selected: Option<u32>,
@@ -186,6 +196,7 @@ struct App {
 #[derive(Debug, Clone)]
 enum Message {
     Tick(Instant),
+    Focus(bool),
     Hover(Hot, bool),
     Nav(i32, i32),
     Refresh,
@@ -228,6 +239,10 @@ impl App {
             load_error: None,
             loading: true,
             tab: Tab::Library,
+            tab_target: Tab::Library,
+            tab_since: now,
+            tab_dir: 1.0,
+            focused: true,
             search: String::new(),
             filter: Filter::All,
             selected: None,
@@ -271,13 +286,22 @@ impl App {
         }
     }
 
-    /// Whether any animation still needs frames.
-    fn animating(&self) -> bool {
-        if self.job.is_some() {
-            return !self.reduce();
+    fn tab_progress(&self) -> f32 {
+        if self.reduce() {
+            1.0
+        } else {
+            anim::progress(self.now, self.tab_since, Duration::ZERO, ms(TAB_WIPE))
         }
+    }
+
+    /// Whether a transition needs every frame. The drifting backdrop alone doesn't: it
+    /// ticks at 30 fps (see `subscription`), and not at all when unfocused.
+    fn animating(&self) -> bool {
         if self.reduce() {
             return false;
+        }
+        if self.job.is_some() || self.tab != self.tab_target || self.tab_progress() < 1.0 {
+            return true;
         }
         let now = Instant::now();
         let grid_len = self.visible().len() as u64;
@@ -303,10 +327,18 @@ impl App {
                 _ => None,
             }
         });
+        let focus = event::listen_with(|event, _, _| match event {
+            Event::Window(window::Event::Focused) => Some(Message::Focus(true)),
+            Event::Window(window::Event::Unfocused) => Some(Message::Focus(false)),
+            _ => None,
+        });
         if self.animating() {
-            Subscription::batch([keys, window::frames().map(Message::Tick)])
+            Subscription::batch([keys, focus, window::frames().map(Message::Tick)])
+        } else if self.focused && !self.reduce() {
+            let drift = iced::time::every(ms(33)).map(Message::Tick);
+            Subscription::batch([keys, focus, drift])
         } else {
-            keys
+            Subscription::batch([keys, focus])
         }
     }
 
@@ -368,14 +400,20 @@ impl App {
             Message::Tick(frame) => {
                 self.now = frame;
                 self.hover.retain(|_, f| f.is_on() || !f.settled(frame));
+                // Swap pages while the wipe covers them.
+                if self.tab != self.tab_target && self.tab_progress() >= 0.45 {
+                    self.tab = self.tab_target;
+                    self.grid_since = self.now;
+                }
             }
+            Message::Focus(on) => self.focused = on,
             Message::Hover(hot, on) => {
                 let now = self.now;
                 let fade = self.hover.get(&hot).map_or_else(|| Fade::new(on, now), |f| f.retarget(on, now));
                 self.hover.insert(hot, fade);
             }
             Message::Nav(dx, dy) => {
-                if self.tab != Tab::Library || self.dialog.is_some() {
+                if self.tab_target != Tab::Library || self.dialog.is_some() {
                     return Task::none();
                 }
                 let ids: Vec<u32> = self.visible().iter().map(|r| r.game.appid).collect();
@@ -412,9 +450,14 @@ impl App {
                 }
             }
             Message::Tab(tab) => {
-                if self.tab != tab {
-                    self.tab = tab;
-                    self.grid_since = self.now;
+                if self.tab_target != tab {
+                    self.tab_dir = if tab == Tab::Settings { 1.0 } else { -1.0 };
+                    self.tab_target = tab;
+                    self.tab_since = self.now;
+                    if self.reduce() {
+                        self.tab = tab;
+                        self.grid_since = self.now;
+                    }
                 }
             }
             Message::Search(s) => {
@@ -586,14 +629,26 @@ impl App {
             .push_maybe(self.warnings())
             .push_maybe(self.job_bar())
             .push_maybe(self.dialog_panel())
-            .push(match self.tab {
-                Tab::Library => self.library(),
-                Tab::Settings => self.settings_page(),
-            })
+            .push(self.page())
             .push_maybe(self.toasts());
         let content = container(page).padding([18, 24]).width(Length::Fill).height(Length::Fill);
-        let backdrop = canvas(shapes::Backdrop { cache: &self.backdrop }).width(Length::Fill).height(Length::Fill);
+        let phase = if self.reduce() { 0.0 } else { self.now.duration_since(self.booted).as_secs_f32() };
+        let backdrop = canvas(shapes::Backdrop { cache: &self.backdrop, phase }).width(Length::Fill).height(Length::Fill);
         stack![backdrop, content].into()
+    }
+
+    /// The current tab, with a lateral wipe over it while switching.
+    fn page(&self) -> Element<'_, Message> {
+        let body = match self.tab {
+            Tab::Library => self.library(),
+            Tab::Settings => self.settings_page(),
+        };
+        let t = self.tab_progress();
+        if t >= 1.0 {
+            return body;
+        }
+        let wipe = canvas(shapes::Wipe::page(t, self.tab_dir)).width(Length::Fill).height(Length::Fill);
+        stack![body, wipe].into()
     }
 
     fn header(&self) -> Element<'_, Message> {
@@ -603,7 +658,7 @@ impl App {
         let gpu = self.snapshot.as_ref().and_then(|s| s.gpu.clone()).unwrap_or_else(|| "Detecting GPU…".into());
         let sub = column![text("SHADER CACHE CONTROL").size(14).font(DISPLAY).color(GREY), text(gpu).size(13).color(GREY)].spacing(2);
         let tab = |label: &str, t: Tab| {
-            let kind = if self.tab == t { Kind::Active } else { Kind::Ghost };
+            let kind = if self.tab_target == t { Kind::Active } else { Kind::Ghost };
             self.button(Hot::Tab(t), label, kind, 17.0, None, Some(Message::Tab(t)))
         };
         row![
@@ -649,7 +704,7 @@ impl App {
         };
         row![
             card(format!("{}/{}", up(count(Status::Ready) as f32), rows.len()), "Games ready", PAPER, false),
-            card(format!("{}", up(count(Status::NeedsReplay) as f32)), "Need replay", if count(Status::NeedsReplay) > 0 { RED } else { GREY }, false),
+            card(format!("{}", up(count(Status::NeedsReplay) as f32)), "Need replay", if count(Status::NeedsReplay) > 0 { ACCENT } else { GREY }, false),
             card(model::size((shaders as f32 * k) as u64), "Shader caches", PAPER, false),
             free,
         ]
@@ -667,7 +722,7 @@ impl App {
             lines.push(text("Recording layer not installed: enable it in Settings.").into());
         }
         (!lines.is_empty()).then(|| {
-            container(row![Self::tag("Heads up", RED, PAPER, 14.0), Column::with_children(lines).spacing(4)].spacing(14).align_y(Alignment::Center))
+            container(row![Self::tag("Heads up", ACCENT, BLACK, 14.0), Column::with_children(lines).spacing(4)].spacing(14).align_y(Alignment::Center))
                 .padding([10, 16])
                 .width(Length::Fill)
                 .style(style::alert)
@@ -697,7 +752,7 @@ impl App {
     fn toasts(&self) -> Option<Element<'_, Message>> {
         (!self.log.is_empty()).then(|| {
             let lines = self.log.iter().rev().take(2).map(|(ok, m)| {
-                let tag = if *ok { Self::tag("Done", PAPER, BLACK, 12.0) } else { Self::tag("Error", RED, PAPER, 12.0) };
+                let tag = if *ok { Self::tag("Done", PAPER, BLACK, 12.0) } else { Self::tag("Error", ALERT, PAPER, 12.0) };
                 row![tag, text(m.clone()).size(13)].spacing(10).align_y(Alignment::Center).into()
             });
             Column::with_children(lines).spacing(4).into()
@@ -854,7 +909,7 @@ impl App {
             container(logo).width(Length::Fill).height(HERO_H).padding(14).align_x(Horizontal::Center).align_y(Vertical::Bottom),
         ];
         if wipe < 1.0 {
-            banner = banner.push(canvas(shapes::Wipe { t: wipe }).width(Length::Fill).height(HERO_H));
+            banner = banner.push(canvas(shapes::Wipe::hero(wipe)).width(Length::Fill).height(HERO_H));
         }
 
         let chips = row![
@@ -877,11 +932,11 @@ impl App {
         let b = &r.breakdown;
         let parts = [
             ("Mesa", b.mesa, PAPER),
-            ("Fossilize", b.fossilize, RED),
+            ("Fossilize", b.fossilize, ACCENT),
             ("DXVK", b.dxvk, GREY),
-            ("vkd3d", b.vkd3d, YELLOW),
+            ("vkd3d", b.vkd3d, style::ACCENT_HI),
             ("NVIDIA/AMDVLK", b.nvidia + b.amdvlk, SMOKE),
-            ("Video", b.video, style::RED_HI),
+            ("Video", b.video, ALERT),
         ];
         let total: u64 = parts.iter().map(|p| p.1).sum();
         let segs = parts.iter().filter(|p| p.1 > 0).map(|(_, size, c)| (*size as f32 / total.max(1) as f32, *c)).collect();

@@ -6,8 +6,10 @@ use iced::alignment::{Horizontal, Vertical};
 use iced::widget::canvas::{self, Frame, Geometry, Path, Stroke, Text};
 use iced::{mouse, Color, Font, Pixels, Point, Rectangle, Renderer, Size, Theme};
 
+use crate::style::{ACCENT, ACCENT_HI};
+
 use crate::anim::{ease_out, lerp};
-use crate::style::{alpha, mix, BLACK, GRAPHITE, GREY, INK, PAPER, RED, RED_HI};
+use crate::style::{alpha, mix, BLACK, GRAPHITE, GREY, INK, PAPER};
 
 pub const DISPLAY: Font = Font::with_name("Anton");
 /// Room left on the right and bottom of slanted buttons for their offset shadow.
@@ -52,7 +54,7 @@ fn truncate(s: &str, max: usize) -> String {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Kind {
-    /// Red, inverts to paper on hover.
+    /// Accent, turns paper on hover.
     Primary,
     /// Graphite, inverts to paper on hover.
     Secondary,
@@ -84,10 +86,10 @@ impl<M> canvas::Program<M> for Slant {
         let (fill, ink, shadow) = match (self.kind, self.enabled) {
             (Kind::Tag(fill, ink), _) => (fill, ink, None),
             (_, false) => (alpha(GRAPHITE, 0.55), alpha(GREY, 0.6), None),
-            (Kind::Primary, _) => (mix(RED, PAPER, p), mix(PAPER, BLACK, p), Some(mix(BLACK, RED_HI, p))),
-            (Kind::Secondary, _) => (mix(GRAPHITE, PAPER, p), mix(PAPER, BLACK, p), Some(alpha(RED_HI, p))),
-            (Kind::Ghost, _) => (mix(INK, GRAPHITE, p), mix(GREY, PAPER, p), Some(alpha(RED_HI, p))),
-            (Kind::Active, _) => (PAPER, BLACK, Some(RED_HI)),
+            (Kind::Primary, _) => (mix(ACCENT, PAPER, p), BLACK, Some(mix(GRAPHITE, ACCENT, p))),
+            (Kind::Secondary, _) => (mix(GRAPHITE, PAPER, p), mix(PAPER, BLACK, p), Some(alpha(ACCENT, p))),
+            (Kind::Ghost, _) => (mix(INK, GRAPHITE, p), mix(GREY, PAPER, p), Some(alpha(ACCENT, p))),
+            (Kind::Active, _) => (PAPER, BLACK, Some(ACCENT)),
         };
         if let Some(shadow) = shadow {
             let off = 2.0 + 3.0 * p.max(if self.kind == Kind::Active { 1.0 } else { 0.0 });
@@ -99,7 +101,7 @@ impl<M> canvas::Program<M> for Slant {
     }
 }
 
-/// Everything around a cover: the red slab that slides out on hover/selection, the
+/// Everything around a cover: the accent slab that slides out on hover/selection, the
 /// selection outline and the name strip below.
 pub struct TileDeco {
     pub name: String,
@@ -118,7 +120,7 @@ impl<M> canvas::Program<M> for TileDeco {
         let k = self.hover.max(self.selected);
         if k > 0.0 {
             let off = 3.0 + 7.0 * k;
-            f.fill(&slant(i + off * 0.5, i + off, cw, ch, 16.0), alpha(if self.selected > 0.0 { RED_HI } else { RED }, k));
+            f.fill(&slant(i + off * 0.5, i + off, cw, ch, 16.0), alpha(if self.selected > 0.0 { ACCENT } else { ACCENT_HI }, k));
         }
         if self.selected > 0.0 {
             f.stroke(
@@ -128,8 +130,8 @@ impl<M> canvas::Program<M> for TileDeco {
         }
         let strip_y = i + ch + 10.0;
         let strip_h = 26.0;
-        let fill = mix(mix(GRAPHITE, PAPER, self.hover), RED, self.selected);
-        let ink = mix(mix(PAPER, BLACK, self.hover), PAPER, self.selected);
+        let fill = mix(mix(GRAPHITE, PAPER, self.hover), ACCENT, self.selected);
+        let ink = mix(mix(PAPER, BLACK, self.hover), BLACK, self.selected);
         f.fill(&slant(i, strip_y, cw, strip_h, 8.0), fill);
         let max_chars = ((cw - 18.0) / (14.0 * 0.5)) as usize;
         text(&mut f, &truncate(&self.name.to_uppercase(), max_chars), Point::new(i + cw / 2.0, strip_y + strip_h / 2.0), 14.0, ink, DISPLAY, Horizontal::Center);
@@ -137,9 +139,27 @@ impl<M> canvas::Program<M> for TileDeco {
     }
 }
 
-/// Diagonal red band that sweeps across the hero when the selection changes.
+/// Diagonal band that sweeps across an area: over the hero when the selection changes,
+/// over the whole page when switching tabs. `dir` is +1 for left-to-right, -1 for
+/// right-to-left. The area is fully covered between `cover_at` and `reveal_at`, which is
+/// when the content underneath can change unseen.
 pub struct Wipe {
     pub t: f32,
+    pub dir: f32,
+    pub cover_at: f32,
+    pub reveal_at: f32,
+    /// Main band colour; the edges are drawn in the other of BLACK/ACCENT.
+    pub band: Color,
+}
+
+impl Wipe {
+    pub fn hero(t: f32) -> Self {
+        Self { t, dir: 1.0, cover_at: 0.45, reveal_at: 0.3, band: ACCENT }
+    }
+
+    pub fn page(t: f32, dir: f32) -> Self {
+        Self { t, dir, cover_at: 0.42, reveal_at: 0.5, band: BLACK }
+    }
 }
 
 impl<M> canvas::Program<M> for Wipe {
@@ -151,15 +171,30 @@ impl<M> canvas::Program<M> for Wipe {
         }
         let mut f = Frame::new(renderer, bounds.size());
         let (w, h) = (bounds.width, bounds.height);
-        let skew = h * 0.45;
+        let skew = (h * 0.45).min(w * 0.35);
         let span = w + 2.0 * skew;
         // The leading edge rushes in, the trailing edge follows: covered, then revealed.
-        let lead = -skew + span * ease_out(self.t / 0.45);
-        let trail = -skew + span * ease_out((self.t - 0.3) / 0.7);
+        let lead = -skew + span * ease_out(self.t / self.cover_at);
+        let trail = -skew + span * ease_out((self.t - self.reveal_at) / (1.0 - self.reveal_at));
+        // Mirror for right-to-left sweeps.
+        let x = |v: f32| if self.dir < 0.0 { w - v } else { v };
+        let quad = |x0: f32, x1: f32| {
+            Path::new(|b| {
+                b.move_to(Point::new(x(x0 + skew), 0.0));
+                b.line_to(Point::new(x(x1 + skew), 0.0));
+                b.line_to(Point::new(x(x1), h));
+                b.line_to(Point::new(x(x0), h));
+                b.close();
+            })
+        };
         if lead > trail {
-            f.fill(&slant(trail, 0.0, lead - trail + skew, h, skew), RED);
-            let edge = 22.0;
-            f.fill(&slant(lead - edge, 0.0, edge + skew, h, skew), BLACK);
+            let edge_color = if self.band == BLACK { ACCENT } else { BLACK };
+            f.fill(&quad(trail, lead), self.band);
+            let edge = 14.0;
+            f.fill(&quad(lead - edge, lead), edge_color);
+            if trail > -skew {
+                f.fill(&quad(trail, trail + edge * 0.6), edge_color);
+            }
         }
         vec![f.into_geometry()]
     }
@@ -180,7 +215,7 @@ impl<M> canvas::Program<M> for StatCard {
         let (w, h) = (bounds.width, bounds.height);
         let skew = 18.0;
         if self.hot {
-            f.fill(&slant(4.0, 4.0, w - 4.0, h - 4.0, skew), RED);
+            f.fill(&slant(4.0, 4.0, w - 4.0, h - 4.0, skew), ACCENT);
         }
         f.fill(&slant(0.0, 0.0, w - 4.0, h - 4.0, skew), INK);
         f.fill(&slant(skew * 0.35, 0.0, 9.0, h - 4.0, skew * 0.65), self.color);
@@ -230,12 +265,12 @@ impl<M> canvas::Program<M> for Stripes {
         let skew = h * 0.7;
         f.fill(&slant(0.0, 0.0, w, h, skew), GRAPHITE);
         let filled = skew + (w - skew) * self.frac.clamp(0.0, 1.0);
-        f.fill(&slant(0.0, 0.0, filled, h, skew), RED);
+        f.fill(&slant(0.0, 0.0, filled, h, skew), ACCENT);
         f.with_clip(Rectangle::new(Point::ORIGIN, Size::new(filled - skew * 0.5, h)), |f| {
             let step = 16.0;
             let mut x = -2.0 * step + self.phase % step;
             while x < filled {
-                f.fill(&slant(x, 0.0, 7.0 + skew, h, skew), alpha(PAPER, 0.22));
+                f.fill(&slant(x, 0.0, 7.0 + skew, h, skew), alpha(BLACK, 0.22));
                 x += step;
             }
         });
@@ -243,7 +278,7 @@ impl<M> canvas::Program<M> for Stripes {
     }
 }
 
-/// The wordmark: paper letters on a black slab over an offset red slab.
+/// The wordmark: paper letters on a black slab over an offset accent slab.
 pub struct Title {
     pub intro: f32,
 }
@@ -256,7 +291,7 @@ impl<M> canvas::Program<M> for Title {
         let (w, h) = (bounds.width - 10.0, bounds.height - 8.0);
         let skew = 16.0;
         let slide = lerp(-40.0, 0.0, ease_out(self.intro));
-        f.fill(&slant(8.0 + slide * 0.5, 8.0, w, h, skew), RED);
+        f.fill(&slant(8.0 + slide * 0.5, 8.0, w, h, skew), ACCENT);
         f.fill(&slant(slide, 0.0, w, h, skew), BLACK);
         f.stroke(&slant(slide, 0.0, w, h, skew), Stroke::default().with_color(PAPER).with_width(2.0));
         text(&mut f, "SHADERWARM", Point::new(slide + w / 2.0, h / 2.0 + 1.0), 34.0, alpha(PAPER, self.intro.max(0.2)), DISPLAY, Horizontal::Center);
@@ -264,31 +299,21 @@ impl<M> canvas::Program<M> for Title {
     }
 }
 
-/// Static backdrop: diagonal red slashes and a halftone fade, drawn once per size.
+/// Backdrop: a cached static layer (black and a halftone fade) under diagonal accent
+/// bands that drift slowly with `phase` (seconds). The moving layer is a handful of
+/// polygons, so redrawing it every frame is cheap.
 pub struct Backdrop<'a> {
     pub cache: &'a canvas::Cache,
+    pub phase: f32,
 }
 
 impl<M> canvas::Program<M> for Backdrop<'_> {
     type State = ();
 
     fn draw(&self, _: &(), renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor) -> Vec<Geometry> {
-        let geometry = self.cache.draw(renderer, bounds.size(), |f| {
-            let (w, h) = (bounds.width, bounds.height);
+        let (w, h) = (bounds.width, bounds.height);
+        let still = self.cache.draw(renderer, bounds.size(), |f| {
             f.fill_rectangle(Point::ORIGIN, bounds.size(), BLACK);
-            let band = |x0: f32, x1: f32, lean: f32| {
-                Path::new(|b| {
-                    b.move_to(Point::new(w * x0, 0.0));
-                    b.line_to(Point::new(w * x1, 0.0));
-                    b.line_to(Point::new(w * x1 - lean, h));
-                    b.line_to(Point::new(w * x0 - lean, h));
-                    b.close();
-                })
-            };
-            let lean = h * 0.55;
-            f.fill(&band(0.66, 0.80, lean), alpha(RED, 0.07));
-            f.fill(&band(0.815, 0.822, lean), alpha(RED_HI, 0.30));
-            f.fill(&band(0.86, 0.93, lean), alpha(RED, 0.04));
             // Halftone dots growing toward the bottom-left corner.
             let step = 18.0;
             let (cols, rows) = ((w * 0.45 / step) as i32, (h * 0.5 / step) as i32);
@@ -303,6 +328,36 @@ impl<M> canvas::Program<M> for Backdrop<'_> {
                 }
             }
         });
-        vec![geometry]
+
+        let mut f = Frame::new(renderer, bounds.size());
+        let lean = h * 0.55;
+        let band = |x0: f32, width: f32| {
+            Path::new(|b| {
+                b.move_to(Point::new(x0, 0.0));
+                b.line_to(Point::new(x0 + width, 0.0));
+                b.line_to(Point::new(x0 + width - lean, h));
+                b.line_to(Point::new(x0 - lean, h));
+                b.close();
+            })
+        };
+        // A repeating set of bands sliding right; the period spans the window plus the lean
+        // so a band leaves on one side as the next enters on the other.
+        let period = w + lean;
+        let drift = (self.phase * 14.0) % period;
+        for copy in [-1.0, 0.0] {
+            let base = drift + copy * period;
+            f.fill(&band(base + w * 0.66, w * 0.14), alpha(ACCENT, 0.05));
+            f.fill(&band(base + w * 0.815, 5.0), alpha(ACCENT, 0.22));
+            f.fill(&band(base + w * 0.86, w * 0.07), alpha(ACCENT, 0.03));
+            f.fill(&band(base + w * 0.30, 2.0), alpha(PAPER, 0.06));
+        }
+        // Faster thin streaks for a sense of speed.
+        let streak_period = w + lean;
+        for (i, speed, y_frac) in [(0, 90.0, 0.18), (1, 130.0, 0.52), (2, 70.0, 0.81)] {
+            let x = (self.phase * speed + i as f32 * 400.0) % streak_period - lean * 0.2;
+            let y = h * y_frac;
+            f.fill(&slant(x, y, 140.0, 3.0, 2.0), alpha(ACCENT, 0.10));
+        }
+        vec![still, f.into_geometry()]
     }
 }

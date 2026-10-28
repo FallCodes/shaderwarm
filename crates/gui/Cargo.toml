@@ -7,5 +7,5 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-iced = { version = "=0.13.1", features = ["image", "svg", "lazy", "canvas"] }
+iced = { version = "=0.13.1", features = ["image", "svg", "lazy", "canvas", "smol"] }
 shaderwarm-core.workspace = true
