@@ -17,6 +17,8 @@ pub struct Settings {
     pub include_self_compiling: bool,
     /// GUI: skip transitions and reveal animations.
     pub reduce_motion: bool,
+    /// GUI: use the desktop's title bar instead of the app's own (takes a restart).
+    pub system_titlebar: bool,
 }
 
 impl Settings {

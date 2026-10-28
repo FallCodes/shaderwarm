@@ -55,7 +55,10 @@ package() {
     install -Dm755 build-fossilize/layer/libVkLayer_fossilize.so "$pkgdir/usr/lib/shaderwarm/libVkLayer_fossilize.so"
     install -Dm644 "$tree/packaging/shaderwarm.desktop" "$pkgdir/usr/share/applications/shaderwarm.desktop"
     install -Dm644 "$tree/assets/shaderwarm.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/shaderwarm.svg"
-    install -Dm644 "$tree/assets/shaderwarm-256.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/shaderwarm.png"
+    local size
+    for size in 16 24 32 48 64 128 256 512; do
+        install -Dm644 "$tree/assets/icons/${size}x${size}/shaderwarm.png" "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/shaderwarm.png"
+    done
     install -Dm644 "$tree/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 fossilize/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE.fossilize"
     install -Dm644 "$tree/assets/fonts/OFL-Anton.txt" "$pkgdir/usr/share/licenses/$pkgname/OFL-Anton.txt"

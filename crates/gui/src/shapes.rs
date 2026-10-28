@@ -361,3 +361,41 @@ impl<M> canvas::Program<M> for Backdrop<'_> {
         vec![still, f.into_geometry()]
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Glyph {
+    Minimize,
+    Maximize,
+    Close,
+}
+
+/// Title-bar window control: a slanted plate that fills on hover, with a line glyph.
+pub struct WinButton {
+    pub glyph: Glyph,
+    pub hover: f32,
+}
+
+impl<M> canvas::Program<M> for WinButton {
+    type State = ();
+
+    fn draw(&self, _: &(), renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor) -> Vec<Geometry> {
+        let mut f = Frame::new(renderer, bounds.size());
+        let (w, h) = (bounds.width, bounds.height);
+        if self.hover > 0.0 {
+            let plate = if self.glyph == Glyph::Close { crate::style::ALERT } else { GRAPHITE };
+            f.fill(&slant(0.0, 0.0, w, h, 10.0), alpha(plate, self.hover));
+        }
+        let ink = Stroke::default().with_color(PAPER).with_width(2.0);
+        let (cx, cy) = (w / 2.0, h / 2.0);
+        let r = 6.0;
+        match self.glyph {
+            Glyph::Minimize => f.stroke(&Path::line(Point::new(cx - r, cy + 3.0), Point::new(cx + r, cy + 3.0)), ink),
+            Glyph::Maximize => f.stroke(&Path::rectangle(Point::new(cx - r, cy - r + 1.0), Size::new(2.0 * r, 2.0 * r - 2.0)), ink),
+            Glyph::Close => {
+                f.stroke(&Path::line(Point::new(cx - r, cy - r), Point::new(cx + r, cy + r)), ink);
+                f.stroke(&Path::line(Point::new(cx + r, cy - r), Point::new(cx - r, cy + r)), ink);
+            }
+        }
+        vec![f.into_geometry()]
+    }
+}

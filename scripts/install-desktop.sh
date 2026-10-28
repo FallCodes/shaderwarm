@@ -9,11 +9,14 @@ APPS=$DATA/applications
 ICONS=$DATA/icons/hicolor
 
 if [[ ${1:-} == --uninstall ]]; then
-    rm -f "$APPS/shaderwarm.desktop" "$ICONS/scalable/apps/shaderwarm.svg" "$ICONS/256x256/apps/shaderwarm.png"
+    rm -f "$APPS/shaderwarm.desktop" "$ICONS/scalable/apps/shaderwarm.svg" "$ICONS"/*/apps/shaderwarm.png
 else
     install -Dm644 "$ROOT/packaging/shaderwarm.desktop" "$APPS/shaderwarm.desktop"
     install -Dm644 "$ROOT/assets/shaderwarm.svg" "$ICONS/scalable/apps/shaderwarm.svg"
-    install -Dm644 "$ROOT/assets/shaderwarm-256.png" "$ICONS/256x256/apps/shaderwarm.png"
+    for png in "$ROOT"/assets/icons/*/shaderwarm.png; do
+        size=$(basename "$(dirname "$png")")
+        install -Dm644 "$png" "$ICONS/$size/apps/shaderwarm.png"
+    done
 fi
 command -v update-desktop-database >/dev/null && update-desktop-database "$APPS" || true
 command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$ICONS" || true

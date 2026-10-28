@@ -45,6 +45,8 @@ const TAB_WIPE: u64 = 560;
 
 pub fn main() -> iced::Result {
     let window = window::Settings {
+        // The app draws its own title bar unless the user asked for the desktop's.
+        decorations: Settings::load().system_titlebar,
         size: Size::new(1360.0, 880.0),
         min_size: Some(Size::new(1040.0, 680.0)),
         icon: window::icon::from_file_data(ICON_PNG, None).ok(),
@@ -95,6 +97,9 @@ enum Btn {
     Restore,
     Video,
     FreeAll,
+    WinMin,
+    WinMax,
+    WinClose,
     Confirm,
     Cancel,
     CopyHint,
@@ -173,6 +178,11 @@ struct App {
     /// +1 when moving right (to Settings), -1 when moving left.
     tab_dir: f32,
     focused: bool,
+    window: Option<window::Id>,
+    /// For telling a double-click on the title bar from a drag.
+    last_title_press: Option<Instant>,
+    /// Decided at startup; changing the setting takes a restart.
+    custom_titlebar: bool,
     search: String,
     filter: Filter,
     selected: Option<u32>,
@@ -197,6 +207,12 @@ struct App {
 enum Message {
     Tick(Instant),
     Focus(bool),
+    WindowId(Option<window::Id>),
+    TitlePress,
+    Minimize,
+    ToggleMaximize,
+    CloseWindow,
+    SystemTitlebar(bool),
     Hover(Hot, bool),
     Nav(i32, i32),
     Refresh,
@@ -243,6 +259,9 @@ impl App {
             tab_since: now,
             tab_dir: 1.0,
             focused: true,
+            window: None,
+            last_title_press: None,
+            custom_titlebar: !settings.system_titlebar,
             search: String::new(),
             filter: Filter::All,
             selected: None,
@@ -260,7 +279,7 @@ impl App {
             cols: Cell::new(1),
             backdrop: canvas::Cache::new(),
         };
-        (app, load())
+        (app, Task::batch([load(), window::get_oldest().map(Message::WindowId)]))
     }
 
     // ---- animation helpers ----------------------------------------------------
@@ -407,6 +426,21 @@ impl App {
                 }
             }
             Message::Focus(on) => self.focused = on,
+            Message::WindowId(id) => self.window = id,
+            Message::TitlePress => {
+                let Some(id) = self.window else { return Task::none() };
+                let double = self.last_title_press.is_some_and(|t| self.now.duration_since(t) < ms(350));
+                self.last_title_press = (!double).then_some(self.now);
+                return if double { window::toggle_maximize(id) } else { window::drag(id) };
+            }
+            Message::Minimize => return self.window.map_or_else(Task::none, |id| window::minimize(id, true)),
+            Message::ToggleMaximize => return self.window.map_or_else(Task::none, window::toggle_maximize),
+            Message::CloseWindow => return self.window.map_or_else(Task::none, window::close),
+            Message::SystemTitlebar(on) => {
+                self.settings.system_titlebar = on;
+                self.save_settings();
+                self.note(Ok("Title bar change applies after restarting shaderwarm".into()));
+            }
             Message::Hover(hot, on) => {
                 let now = self.now;
                 let fade = self.hover.get(&hot).map_or_else(|| Fade::new(on, now), |f| f.retarget(on, now));
@@ -632,6 +666,12 @@ impl App {
             .push(self.page())
             .push_maybe(self.toasts());
         let content = container(page).padding([18, 24]).width(Length::Fill).height(Length::Fill);
+        let content: Element<_> = if self.custom_titlebar {
+            // Without the desktop frame, a hairline keeps the window edge visible.
+            container(column![self.title_bar(), content]).style(style::frame).into()
+        } else {
+            content.into()
+        };
         let phase = if self.reduce() { 0.0 } else { self.now.duration_since(self.booted).as_secs_f32() };
         let backdrop = canvas(shapes::Backdrop { cache: &self.backdrop, phase }).width(Length::Fill).height(Length::Fill);
         let mut window = stack![backdrop, content];
@@ -650,12 +690,48 @@ impl App {
         }
     }
 
+    /// The app's own title bar: drag to move, double-click to maximize.
+    fn title_bar(&self) -> Element<'_, Message> {
+        // The header below carries the wordmark, so the bar stays quiet.
+        let label = row![
+            svg(svg::Handle::from_memory(ICON_SVG)).width(20).height(20),
+            Self::tag("Shader cache control", ACCENT, BLACK, 10.0),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center);
+        let grab = mouse_area(container(label).width(Length::Fill).height(36).padding([0, 12]).align_y(Vertical::Center))
+            .on_press(Message::TitlePress);
+        let control = |hot: Btn, glyph: shapes::Glyph, msg: Message| {
+            mouse_area(canvas(shapes::WinButton { glyph, hover: self.hov(Hot::Btn(hot)) }).width(48).height(36))
+                .on_enter(Message::Hover(Hot::Btn(hot), true))
+                .on_exit(Message::Hover(Hot::Btn(hot), false))
+                .on_press(msg)
+                .interaction(mouse::Interaction::Pointer)
+        };
+        let bar = row![
+            grab,
+            control(Btn::WinMin, shapes::Glyph::Minimize, Message::Minimize),
+            control(Btn::WinMax, shapes::Glyph::Maximize, Message::ToggleMaximize),
+            control(Btn::WinClose, shapes::Glyph::Close, Message::CloseWindow),
+        ]
+        .align_y(Alignment::Center);
+        column![
+            container(bar).width(Length::Fill).style(style::fill(BLACK)),
+            container(Space::new(Length::Fill, 1)).style(style::fill(GRAPHITE)),
+        ]
+        .into()
+    }
+
     fn header(&self) -> Element<'_, Message> {
         let icon = svg(svg::Handle::from_memory(ICON_SVG)).width(52).height(52);
         let intro = self.eased(self.booted, 0, 520);
         let title = canvas(shapes::Title { intro }).width(270).height(62);
         let gpu = self.snapshot.as_ref().and_then(|s| s.gpu.clone()).unwrap_or_else(|| "Detecting GPU…".into());
-        let sub = column![text("SHADER CACHE CONTROL").size(14).font(DISPLAY).color(GREY), text(gpu).size(13).color(GREY)].spacing(2);
+        let mut sub = column![].spacing(2);
+        if !self.custom_titlebar {
+            sub = sub.push(text("SHADER CACHE CONTROL").size(14).font(DISPLAY).color(GREY));
+        }
+        let sub = sub.push(text(gpu).size(13).color(GREY));
         let tab = |label: &str, t: Tab| {
             let kind = if self.tab_target == t { Kind::Active } else { Kind::Ghost };
             self.button(Hot::Tab(t), label, kind, 17.0, None, Some(Message::Tab(t)))
@@ -1047,6 +1123,10 @@ impl App {
         let interface = column![
             Self::heading("Interface", 24.0),
             toggler(self.settings.reduce_motion).label("Reduce motion (no wipes, reveals or count-ups)").on_toggle(Message::ReduceMotion),
+            toggler(self.settings.system_titlebar)
+                .label("Use the desktop's title bar instead of shaderwarm's (restart to apply)")
+                .on_toggle(Message::SystemTitlebar),
+            text("shaderwarm's title bar: drag to move, double-click to maximize. Resize with the maximize button, KDE tiling (Meta+arrows) or Meta+right-drag.").size(13).color(GREY),
             text("Keyboard: arrow keys move through the library, F5 refreshes.").size(13).color(GREY),
         ]
         .spacing(12);

@@ -60,6 +60,11 @@ pub fn alert(_: &Theme) -> container::Style {
     container::Style { background: Some(BLACK.into()), border: sharp(ACCENT, 3.0), ..container::Style::default() }
 }
 
+/// Hairline window edge for the custom title bar mode.
+pub fn frame(_: &Theme) -> container::Style {
+    container::Style { border: sharp(SMOKE, 1.0), ..container::Style::default() }
+}
+
 /// A plain fill, used for reveal curtains and fades.
 pub fn fill(color: Color) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style { background: Some(color.into()), ..container::Style::default() }

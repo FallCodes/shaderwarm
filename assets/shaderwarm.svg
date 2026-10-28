@@ -1,16 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <rect x="8" y="8" width="240" height="240" rx="40" fill="#0b0b0c"/>
-  <!-- the UI's signature shape: a slanted accent slab -->
-  <path d="M84 24 L232 24 L172 232 L24 232 Z" fill="#ffd60a"/>
+  <!-- hard-edged black tile, like the app's panels -->
+  <rect x="8" y="8" width="240" height="240" rx="10" fill="#0b0b0c"/>
+  <!-- the signature slanted accent slab, offset like the app's shadows -->
+  <path d="M92 20 L240 20 L180 236 L32 236 Z" fill="#ffd60a"/>
+  <path d="M78 20 L86 20 L26 236 L18 236 Z" fill="#f2efe6" opacity="0.9"/>
   <!-- the primitive every shader draws: a mesh triangle -->
-  <path d="M128 50 L210 194 L46 194 Z" fill="#0b0b0c" stroke="#f2efe6" stroke-width="10" stroke-linejoin="miter"/>
+  <path d="M128 52 L208 192 L48 192 Z" fill="#0b0b0c" stroke="#f2efe6" stroke-width="11" stroke-linejoin="miter"/>
   <!-- warmth: a flame inside the triangle -->
-  <path d="M128 92 C141 110 155 121 153 143 C151 162 140 173 128 173 C116 173 104 163 104 145
-           C104 131 111 122 117 114 C118 127 122 132 128 133 C124 119 123 105 128 92 Z" fill="#ffd60a"/>
-  <path d="M128 133 C134 142 139 147 138 156 C137 164 133 168 128 168 C123 168 118 164 118 157
-           C118 150 122 146 125 141 C126 146 127 148 129 148 C127 144 126 138 128 133 Z" fill="#0b0b0c"/>
-  <!-- vertices -->
-  <rect x="119" y="41" width="18" height="18" fill="#f2efe6" transform="rotate(45 128 50)"/>
-  <rect x="201" y="185" width="18" height="18" fill="#f2efe6" transform="rotate(45 210 194)"/>
-  <rect x="37" y="185" width="18" height="18" fill="#f2efe6" transform="rotate(45 46 194)"/>
+  <path d="M128 94 C141 112 155 123 153 145 C151 163 140 174 128 174 C116 174 104 164 104 146
+           C104 132 111 123 117 115 C118 128 122 133 128 134 C124 120 123 106 128 94 Z" fill="#ffd60a"/>
+  <path d="M128 134 C134 143 139 148 138 157 C137 165 133 169 128 169 C123 169 118 165 118 158
+           C118 151 122 147 125 142 C126 147 127 149 129 149 C127 145 126 139 128 134 Z" fill="#0b0b0c"/>
 </svg>
