@@ -34,6 +34,7 @@ const TILE_H: f32 = 225.0;
 const INSET: f32 = 12.0;
 const GAP: f32 = 10.0;
 const PANEL_W: f32 = 450.0;
+/// Banner height when a game has no hero image; real heroes keep their own aspect ratio.
 const HERO_H: f32 = 200.0;
 // Motion tokens (ms).
 const STAGGER: u64 = 35;
@@ -1012,21 +1013,23 @@ impl App {
         let wipe = if self.reduce() { 1.0 } else { anim::progress(self.now, self.panel_since, Duration::ZERO, ms(WIPE)) };
 
         let hero: Element<_> = match &r.art.hero {
-            Some(p) => image(image::Handle::from_path(p)).width(Length::Fill).height(HERO_H).content_fit(ContentFit::Cover).into(),
+            // Full width, natural height: Steam heroes are ~3.1:1, and cropping them to a
+            // fixed box cut off the sides (where many keep their characters).
+            Some(p) => image(image::Handle::from_path(p)).width(Length::Fill).content_fit(ContentFit::Contain).into(),
             None => container(Space::new(Length::Fill, HERO_H)).style(style::fill(GRAPHITE)).into(),
         };
         let logo: Element<_> = match &r.art.logo {
             // Bounded on both axes: wide logos shrink to the panel instead of being clipped.
-            Some(p) => image(image::Handle::from_path(p)).width(Length::Fill).height(84).content_fit(ContentFit::Contain).into(),
+            Some(p) => image(image::Handle::from_path(p)).width(Length::Fill).height(64).content_fit(ContentFit::Contain).into(),
             None => Self::heading(&r.game.name, 34.0).into(),
         };
         let mut banner = stack![
             hero,
-            container(Space::new(Length::Fill, HERO_H)).style(style::hero_fade),
-            container(logo).width(Length::Fill).height(HERO_H).padding(14).align_x(Horizontal::Center).align_y(Vertical::Bottom),
+            container(Space::new(Length::Fill, Length::Fill)).style(style::hero_fade),
+            container(logo).width(Length::Fill).height(Length::Fill).padding(12).align_x(Horizontal::Center).align_y(Vertical::Bottom),
         ];
         if wipe < 1.0 {
-            banner = banner.push(canvas(shapes::Wipe::hero(wipe)).width(Length::Fill).height(HERO_H));
+            banner = banner.push(canvas(shapes::Wipe::hero(wipe)).width(Length::Fill).height(Length::Fill));
         }
 
         let chips = Self::tag_rows(&[r.engine.clone(), r.proton.clone(), format!("App {}", r.game.appid)], 12.0, PANEL_W - 40.0);
