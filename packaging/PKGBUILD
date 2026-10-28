@@ -1,5 +1,5 @@
 # Builds shaderwarm from this checkout plus upstream Fossilize (MIT) at a pinned commit.
-# Usage: cd packaging && makepkg -si
+# Usage: cd packaging && makepkg -fsi  (-f rebuilds; without it makepkg reinstalls an old package file)
 pkgname=shaderwarm
 pkgver=0.1.0
 pkgrel=1

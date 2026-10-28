@@ -32,7 +32,7 @@ precaching misses most pipelines.
 
 ```sh
 # Arch / CachyOS package (builds Fossilize too)
-cd packaging && makepkg -si
+cd packaging && makepkg -fsi   # -f: rebuild even if an older package file exists
 
 # or from source
 sudo pacman -S --needed rustup cmake ninja
