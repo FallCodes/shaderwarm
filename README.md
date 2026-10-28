@@ -89,4 +89,4 @@ go in `~/.config/shaderwarm/self-precompile.toml`, in the same format as
 
 ## License
 
-GPL-3.0-or-later. Fossilize is MIT.
+GPL-3.0-or-later. Fossilize is MIT; the bundled Anton font is SIL OFL 1.1 (`assets/fonts/OFL-Anton.txt`).

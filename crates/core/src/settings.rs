@@ -15,6 +15,8 @@ pub struct Settings {
     pub threads: Option<usize>,
     /// Let `replay --stale/--all` and auto-replay include self-compiling games.
     pub include_self_compiling: bool,
+    /// GUI: skip transitions and reveal animations.
+    pub reduce_motion: bool,
 }
 
 impl Settings {
