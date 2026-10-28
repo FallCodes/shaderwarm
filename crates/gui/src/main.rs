@@ -195,7 +195,9 @@ struct App {
     now: Instant,
     booted: Instant,
     hover: HashMap<Hot, Fade>,
-    grid_since: Instant,
+    /// When each visible tile starts its entrance. Tiles keep their time while they stay
+    /// visible, so typing in the search box only animates games that newly appear.
+    revealed: HashMap<u32, Instant>,
     panel_since: Instant,
     stats_since: Instant,
     /// Grid columns from the last layout, for arrow-key navigation.
@@ -273,7 +275,7 @@ impl App {
             now,
             booted: now,
             hover: HashMap::new(),
-            grid_since: now,
+            revealed: HashMap::new(),
             panel_since: now,
             stats_since: now,
             cols: Cell::new(1),
@@ -323,10 +325,9 @@ impl App {
             return true;
         }
         let now = Instant::now();
-        let grid_len = self.visible().len() as u64;
         let busy_until = |start: Instant, total: u64| now < start + ms(total);
         self.hover.values().any(|f| !f.settled(now))
-            || busy_until(self.grid_since, grid_len * STAGGER + TILE_IN)
+            || self.revealed.values().any(|&t| busy_until(t, TILE_IN))
             || busy_until(self.panel_since, WIPE.max(PANEL_IN))
             || busy_until(self.stats_since, COUNT_UP)
             || busy_until(self.booted, 700)
@@ -384,6 +385,23 @@ impl App {
         self.log.drain(..excess);
     }
 
+    /// Gives newly visible tiles an entrance time (staggered among themselves) and
+    /// forgets hidden ones. `restart` replays the entrance for every visible tile.
+    fn sync_reveal(&mut self, restart: bool) {
+        if restart {
+            self.revealed.clear();
+        }
+        let visible: Vec<u32> = self.visible().iter().map(|r| r.game.appid).collect();
+        self.revealed.retain(|id, _| visible.contains(id));
+        let mut newcomers = 0;
+        for id in visible {
+            if !self.revealed.contains_key(&id) {
+                self.revealed.insert(id, self.now + ms(STAGGER * newcomers));
+                newcomers += 1;
+            }
+        }
+    }
+
     fn select(&mut self, appid: u32) {
         if self.selected != Some(appid) {
             self.selected = Some(appid);
@@ -422,7 +440,7 @@ impl App {
                 // Swap pages while the wipe covers them.
                 if self.tab != self.tab_target && self.tab_progress() >= 0.45 {
                     self.tab = self.tab_target;
-                    self.grid_since = self.now;
+                    self.sync_reveal(true);
                 }
             }
             Message::Focus(on) => self.focused = on,
@@ -473,9 +491,7 @@ impl App {
                         self.snapshot = Some(s);
                         self.load_error = None;
                         self.stats_since = self.now;
-                        if first {
-                            self.grid_since = self.now;
-                        }
+                        self.sync_reveal(first);
                         if let Some(id) = pick {
                             self.select(id);
                         }
@@ -490,18 +506,18 @@ impl App {
                     self.tab_since = self.now;
                     if self.reduce() {
                         self.tab = tab;
-                        self.grid_since = self.now;
+                        self.sync_reveal(true);
                     }
                 }
             }
             Message::Search(s) => {
                 self.search = s;
-                self.grid_since = self.now;
+                self.sync_reveal(false);
             }
             Message::Filter(f) => {
                 if self.filter != f {
                     self.filter = f;
-                    self.grid_since = self.now;
+                    self.sync_reveal(false);
                 }
             }
             Message::Select(appid) => self.select(appid),
@@ -907,8 +923,8 @@ impl App {
             let content: Element<_> = if visible.is_empty() {
                 container(Self::heading("No games match", 24.0).color(GREY)).padding(40).into()
             } else {
-                let rows = visible.chunks(cols).enumerate().map(|(ri, chunk)| {
-                    WRow::with_children(chunk.iter().enumerate().map(|(ci, r)| self.tile(r, ri * cols + ci))).spacing(gap).into()
+                let rows = visible.chunks(cols).map(|chunk| {
+                    WRow::with_children(chunk.iter().map(|r| self.tile(r))).spacing(gap).into()
                 });
                 Column::with_children(rows).spacing(GAP).padding(Padding { top: 6.0, right: 14.0, bottom: 6.0, left: 0.0 }).into()
             };
@@ -933,9 +949,9 @@ impl App {
         }
     }
 
-    fn tile<'a>(&'a self, r: &'a Row, index: usize) -> Element<'a, Message> {
+    fn tile<'a>(&'a self, r: &'a Row) -> Element<'a, Message> {
         let id = r.game.appid;
-        let reveal = self.eased(self.grid_since, STAGGER * index as u64, TILE_IN);
+        let reveal = self.revealed.get(&id).map_or(1.0, |&t| self.eased(t, 0, TILE_IN));
         let hover = self.hov(Hot::Tile(id));
         let selected = if self.selected == Some(id) { self.eased(self.panel_since, 0, 160) } else { 0.0 };
         let (w, h) = (TILE_W + 2.0 * INSET + 6.0, TILE_H + INSET + 10.0 + 26.0 + 10.0);
