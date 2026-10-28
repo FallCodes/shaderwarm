@@ -42,6 +42,14 @@ enum Command {
     Replay(ReplayArgs),
     /// Remove video transcodes, orphaned caches or one game's shader cache.
     Clean(CleanArgs),
+    /// Show a game's Unreal IoStore containers and shader files (diagnostics).
+    #[command(hide = true)]
+    Inspect {
+        appid: u32,
+        /// Write chunk <INDEX> of the container whose file name contains <CONTAINER> to <OUT>.
+        #[arg(long, num_args = 3, value_names = ["CONTAINER", "INDEX", "OUT"])]
+        dump: Option<Vec<String>>,
+    },
     /// Put a backup made by `clean --cache --backup` back in place.
     Restore {
         appid: u32,
@@ -111,6 +119,7 @@ fn main() -> Result<()> {
         Command::Doctor => doctor(&steam),
         Command::Replay(args) => replay_cmd(&steam, args),
         Command::Clean(args) => clean_cmd(&steam, args),
+        Command::Inspect { appid, dump } => inspect(&steam, appid, dump),
         Command::Restore { appid, timestamp } => restore_cmd(&steam, appid, timestamp),
     }
 }
@@ -444,4 +453,113 @@ fn format_age(secs: u64) -> String {
         s if s < 172_800 => format!("{} h", s / 3600),
         s => format!("{} days", s / 86_400),
     }
+}
+
+fn find_files(dir: &std::path::Path, ext: &str, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            find_files(&path, ext, out);
+        } else if path.extension().is_some_and(|e| e == ext) {
+            out.push(path);
+        }
+    }
+}
+
+fn inspect(steam: &Steam, appid: u32, dump: Option<Vec<String>>) -> Result<()> {
+    use shaderwarm_core::ue::iostore::{Toc, UcasFiles};
+
+    let game = find_game(steam, appid)?;
+    let mut tocs = Vec::new();
+    find_files(&game.install_dir, "utoc", &mut tocs);
+    tocs.sort();
+    for path in tocs {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let toc = match Toc::open(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                println!("{name}: {e:#}");
+                continue;
+            }
+        };
+        let mut kinds: BTreeMap<u8, usize> = BTreeMap::new();
+        for c in &toc.chunks {
+            *kinds.entry(c.id.kind()).or_default() += 1;
+        }
+        if let Some([container, index, out]) = dump.as_deref() {
+            if name.contains(container.as_str()) {
+                let data = toc.read_chunk(index.parse()?, &mut UcasFiles::default())?;
+                std::fs::write(out, &data)?;
+                println!("wrote {} bytes of chunk {index} of {name} to {out}", data.len());
+            }
+            continue;
+        }
+        println!("{name}: v{} {} chunks, {} files, types {kinds:?}", toc.version, toc.chunks.len(), toc.files.len());
+        for (file, chunk) in &toc.files {
+            let lower = file.to_ascii_lowercase();
+            if lower.ends_with(".ushaderbytecode") || lower.ends_with(".upipelinecache") {
+                let c = toc.chunks.get(*chunk);
+                println!("  {file} (chunk {chunk}, type {:?}, {} bytes)", c.map(|c| c.id.kind()), c.map_or(0, |c| c.length));
+                if lower.ends_with(".ushaderbytecode") {
+                    if let Err(e) = inspect_library(&toc, *chunk) {
+                        println!("    unreadable: {e:#}");
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Decodes a sample of a shader library to show what pre-warming could use.
+fn inspect_library(toc: &shaderwarm_core::ue::iostore::Toc, chunk: usize) -> Result<()> {
+    use shaderwarm_core::dxbc;
+    use shaderwarm_core::ue::{iostore::UcasFiles, shaderlib::ShaderLibrary};
+
+    let mut files = UcasFiles::default();
+    let lib = ShaderLibrary::parse(&toc.read_chunk(chunk, &mut files)?)?;
+    let mut freq: BTreeMap<String, usize> = BTreeMap::new();
+    for s in &lib.shaders {
+        *freq.entry(format!("{:?}", s.frequency)).or_default() += 1;
+    }
+    println!("    {} shaders in {} groups: {freq:?}", lib.shaders.len(), lib.groups.len());
+
+    let sample = lib.groups.len().min(50);
+    let (mut shaders, mut containers, mut dxil, mut rts0) = (0, 0, 0, 0);
+    // SFI0 feature bits for SM6.6 dynamic resources: set when a shader indexes the
+    // descriptor heap directly, i.e. Unreal's bindless mode with one global root signature.
+    const HEAP_INDEXING: u64 = 0x0200_0000 | 0x0400_0000;
+    let mut by_freq: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new();
+    let mut prefix_shown = false;
+    for g in 0..sample {
+        for s in lib.read_group(g, toc, &mut files)? {
+            shaders += 1;
+            let found = dxbc::find_all(&s.code);
+            containers += found.len();
+            dxil += found.iter().filter(|c| c.is_dxil()).count();
+            let with_rs = found.iter().any(|c| c.root_signature().is_some());
+            let bindless = found.iter().any(|c| {
+                c.part(b"SFI0")
+                    .and_then(|p| p.get(..8))
+                    .is_some_and(|f| u64::from_le_bytes(f.try_into().unwrap()) & HEAP_INDEXING != 0)
+            });
+            rts0 += usize::from(with_rs);
+            let e = by_freq.entry(format!("{:?}", s.frequency)).or_default();
+            e.0 += 1;
+            e.1 += usize::from(with_rs);
+            e.2 += usize::from(bindless);
+            if !prefix_shown {
+                if let Some(c) = found.first() {
+                    let at = c.bytes.as_ptr() as usize - s.code.as_ptr() as usize;
+                    let tail = s.code.len() - at - c.bytes.len();
+                    println!("    first shader: {at} bytes before container, {tail} after, {} code bytes", s.code.len());
+                    prefix_shown = true;
+                }
+            }
+        }
+    }
+    println!("    sample of {sample} groups: {shaders} shaders, {containers} containers ({dxil} DXIL), {rts0} with root signature");
+    println!("    by stage (shaders, with RTS0, heap-indexed): {by_freq:?}");
+    Ok(())
 }

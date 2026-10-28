@@ -2,6 +2,7 @@
 
 pub mod cache;
 pub mod clean;
+pub mod dxbc;
 pub mod fossilize;
 pub mod fsutil;
 pub mod gpu;
@@ -11,4 +12,5 @@ pub mod record;
 pub mod replay;
 pub mod state;
 pub mod steam;
+pub mod ue;
 pub mod vdf;

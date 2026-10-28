@@ -13,6 +13,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 ash = "0.38"
+oozextract = "0.5"
 shaderwarm-core = { path = "crates/core" }
 
 [profile.release]
