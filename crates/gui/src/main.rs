@@ -162,8 +162,9 @@ impl Status {
 enum Dialog {
     Purge { appid: u32, name: String, recordings: bool, backup: bool, preview: Option<(usize, u64)> },
     SelfCompiling { appid: u32, name: String, reason: String },
-    /// `appid: None` cleans every game.
-    Video { appid: Option<u32>, name: String, bytes: u64 },
+    Video { appid: u32, name: String, bytes: u64 },
+    /// Library-wide cleanup: Steam's video and caches of uninstalled games.
+    Free { video: bool, orphans: bool },
     Fetch { delete_video: bool, replay: bool },
 }
 
@@ -252,8 +253,12 @@ enum Message {
     PurgeBackup(bool),
     PurgePreview(Result<(usize, u64), String>),
     PurgeConfirmed,
-    OpenVideo(Option<u32>),
+    OpenVideo(u32),
     VideoConfirmed,
+    OpenFree,
+    FreeVideo(bool),
+    FreeOrphans(bool),
+    FreeConfirmed,
     Restore(u32),
     ActionDone(Result<String, String>),
     CloseDialog,
@@ -624,18 +629,31 @@ impl App {
                 }
             }
             Message::OpenVideo(appid) => {
-                let (name, bytes) = match appid {
-                    Some(id) => self.row(id).map_or((String::new(), 0), |r| (r.game.name.clone(), r.video)),
-                    None => ("all games".into(), self.rows().iter().map(|r| r.video).sum()),
-                };
+                let (name, bytes) = self.row(appid).map_or((String::new(), 0), |r| (r.game.name.clone(), r.video));
                 self.dialog = Some(Dialog::Video { appid, name, bytes });
             }
             Message::VideoConfirmed => {
                 if let Some(Dialog::Video { appid, .. }) = self.dialog.take() {
-                    return match appid {
-                        Some(id) => action(move || model::clean_video(id)),
-                        None => action(model::clean_all_video),
-                    };
+                    return action(move || model::clean_video(appid));
+                }
+            }
+            Message::OpenFree => {
+                let (video, orphans) = self.freeable();
+                self.dialog = Some(Dialog::Free { video: video > 0, orphans: orphans > 0 });
+            }
+            Message::FreeVideo(on) => {
+                if let Some(Dialog::Free { video, .. }) = &mut self.dialog {
+                    *video = on;
+                }
+            }
+            Message::FreeOrphans(on) => {
+                if let Some(Dialog::Free { orphans, .. }) = &mut self.dialog {
+                    *orphans = on;
+                }
+            }
+            Message::FreeConfirmed => {
+                if let Some(Dialog::Free { video, orphans }) = self.dialog.take() {
+                    return action(move || model::free_space(video, orphans));
                 }
             }
             Message::Restore(appid) => return action(move || model::restore_latest(appid)),
@@ -873,25 +891,32 @@ impl App {
         .into()
     }
 
+    /// Bytes of Steam video in installed games, and of caches left by uninstalled ones.
+    fn freeable(&self) -> (u64, u64) {
+        let video = self.rows().iter().map(|r| r.video).sum();
+        (video, self.snapshot.as_ref().map_or(0, |s| s.orphans))
+    }
+
     fn stats(&self) -> Element<'_, Message> {
         let rows = self.rows();
         let count = |s: Status| rows.iter().filter(|r| Status::of(r) == s).count();
         let k = self.eased(self.stats_since, 0, COUNT_UP);
         let up = |n: f32| (n * k).round();
         let shaders: u64 = rows.iter().map(|r| r.shaders).sum();
-        let video: u64 = rows.iter().map(|r| r.video).sum();
+        let (video, orphans) = self.freeable();
+        let freeable = video + orphans;
         let card = |value: String, label: &str, color: Color, hot: bool| {
             canvas(shapes::StatCard { value, label: label.to_string(), color, hot }).width(Length::Fill).height(84)
         };
-        let free: Element<_> = if video > 1 << 20 {
-            let button = self.button(Hot::Btn(Btn::FreeAll), "Free it", Kind::Primary, 15.0, None, (!self.busy()).then_some(Message::OpenVideo(None)));
+        let free: Element<_> = if freeable > 1 << 20 {
+            let button = self.button(Hot::Btn(Btn::FreeAll), "Free it", Kind::Primary, 15.0, None, (!self.busy()).then_some(Message::OpenFree));
             stack![
-                card(model::size((video as f32 * k) as u64), "Steam video you can free", PAPER, true),
+                card(model::size((freeable as f32 * k) as u64), "Space you can free", PAPER, true),
                 container(button).width(Length::Fill).height(Length::Fill).align_x(Horizontal::Right).align_y(Vertical::Center).padding([0, 22]),
             ]
             .into()
         } else {
-            card("0 B".into(), "Steam video to free", GREY, false).into()
+            card("0 B".into(), "Space to free", GREY, false).into()
         };
         row![
             card(format!("{}/{}", up(count(Status::Ready) as f32), rows.len()), "Games ready", PAPER, false),
@@ -1025,6 +1050,32 @@ impl App {
             ]
             .spacing(12)
             .into(),
+            Dialog::Free { video, orphans } => {
+                let (video_bytes, orphan_bytes) = self.freeable();
+                let mut picked = 0;
+                if *video {
+                    picked += video_bytes;
+                }
+                if *orphans {
+                    picked += orphan_bytes;
+                }
+                let option = |label: String, bytes: u64, on: bool, msg: fn(bool) -> Message| {
+                    let mut c = checkbox(format!("{label} ({})", model::size(bytes)), on && bytes > 0);
+                    if bytes > 0 {
+                        c = c.on_toggle(msg);
+                    }
+                    c
+                };
+                column![
+                    Self::heading("Free disk space?", 24.0),
+                    option("Steam's transcoded video, which Proton-CachyOS/GE don't need".into(), video_bytes, *video, Message::FreeVideo),
+                    option("Shader caches and recordings of games that are no longer installed".into(), orphan_bytes, *orphans, Message::FreeOrphans),
+                    text("Reinstalling a game later just means its shaders compile again.").size(13).color(GREY),
+                    row![confirm(&format!("Delete {}", model::size(picked)), (picked > 0).then_some(Message::FreeConfirmed)), cancel].spacing(12),
+                ]
+                .spacing(12)
+                .into()
+            }
             Dialog::Video { name, bytes, .. } => column![
                 Self::heading(&format!("Delete Steam's video for {name}?"), 24.0),
                 text(format!("{} of transcoded video that Proton-CachyOS/GE don't need.", model::size(*bytes))).color(GREY),
@@ -1223,7 +1274,7 @@ impl App {
                 Kind::Secondary,
                 14.0,
                 None,
-                idle.then_some(Message::OpenVideo(Some(r.game.appid))),
+                idle.then_some(Message::OpenVideo(r.game.appid)),
             ));
         }
 

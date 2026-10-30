@@ -59,6 +59,8 @@ pub struct Snapshot {
     pub auto_replay: bool,
     /// An earlier "Fetch from Steam" stopped with Steam open and pre-caching on.
     pub interrupted_fetch: bool,
+    /// Bytes of caches and recordings left behind by games that are no longer installed.
+    pub orphans: u64,
     pub rows: Vec<Row>,
 }
 
@@ -106,6 +108,7 @@ pub fn load() -> Result<Snapshot, String> {
         layer_installed: fossilize::layer_manifest().is_some(),
         auto_replay: units::installed(),
         interrupted_fetch: steamfetch::interrupted().is_some(),
+        orphans: clean::orphan_targets(&steam).iter().map(|t| t.size).sum(),
         rows,
     })
 }
@@ -233,13 +236,20 @@ pub fn restore_latest(appid: u32) -> Result<String, String> {
     })
 }
 
-/// Deletes Steam's transcoded video for every installed game.
-pub fn clean_all_video() -> Result<String, String> {
+/// Deletes Steam's transcoded video for every installed game and/or the caches of games
+/// that are no longer installed.
+pub fn free_space(video: bool, orphans: bool) -> Result<String, String> {
     let steam = Steam::locate().map_err(err)?;
-    let targets: Vec<_> = steam.games().iter().flat_map(clean::video_targets).collect();
+    let mut targets = Vec::new();
+    if video {
+        targets.extend(steam.games().iter().flat_map(clean::video_targets));
+    }
+    if orphans {
+        targets.extend(clean::orphan_targets(&steam));
+    }
     let total: u64 = targets.iter().map(|t| t.size).sum();
     clean::remove(&targets, None).map_err(err)?;
-    Ok(format!("Freed {} of Steam video", size(total)))
+    Ok(format!("Freed {}", size(total)))
 }
 
 pub fn clean_video(appid: u32) -> Result<String, String> {
