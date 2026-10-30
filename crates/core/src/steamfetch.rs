@@ -27,6 +27,8 @@ const QUIET: Duration = Duration::from_secs(90);
 /// No shader job at all this long after Steam started means there is nothing to fetch.
 const IDLE: Duration = Duration::from_secs(180);
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(90);
+/// How long Steam must stay gone before the window counts it as closed by the user.
+const GONE: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_secs(1);
 
 const PROC: &str = "/proc";
@@ -136,6 +138,7 @@ fn window(steam: &Steam, opts: &Options, cancel: &AtomicBool, on_event: &mut imp
     let start = Instant::now();
     let mut watch = Watch::new(start);
     let mut steam_seen = false;
+    let mut gone_since: Option<Instant> = None;
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Ok(watch.report(End::Cancelled));
@@ -154,11 +157,16 @@ fn window(steam: &Steam, opts: &Options, cancel: &AtomicBool, on_event: &mut imp
         if now.duration_since(start) >= opts.timeout {
             return Ok(watch.report(End::TimedOut));
         }
-        // The bootstrap takes a moment to appear; only a client that came and went counts.
+        // The bootstrap takes a moment to appear, and a self-update restarts the client, so
+        // Steam only counts as closed once it has been gone for a while.
         if steam::client_running(proc_root) {
             steam_seen = true;
-        } else if steam_seen || now.duration_since(start) >= SHUTDOWN_WAIT {
-            return Ok(watch.report(End::SteamExited));
+            gone_since = None;
+        } else {
+            let since = *gone_since.get_or_insert(now);
+            if (steam_seen && now.duration_since(since) >= GONE) || now.duration_since(start) >= SHUTDOWN_WAIT {
+                return Ok(watch.report(End::SteamExited));
+            }
         }
         thread::sleep(POLL);
     }

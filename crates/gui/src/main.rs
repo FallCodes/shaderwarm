@@ -342,13 +342,13 @@ impl App {
         }
     }
 
-    /// Whether a transition needs every frame. The drifting backdrop alone doesn't: it
-    /// ticks at 30 fps (see `subscription`), and not at all when unfocused.
+    /// Whether a transition needs every frame. The drifting backdrop and the progress bar's
+    /// stripes don't: they tick at 30 fps (see `subscription`), and not at all when unfocused.
     fn animating(&self) -> bool {
         if self.reduce() {
             return false;
         }
-        if self.job.is_some() || self.tab != self.tab_target || self.tab_progress() < 1.0 {
+        if self.tab != self.tab_target || self.tab_progress() < 1.0 {
             return true;
         }
         let now = Instant::now();
