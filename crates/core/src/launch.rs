@@ -76,9 +76,39 @@ pub fn exe_name<'a>(args: impl IntoIterator<Item = &'a str>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Splits leading `NAME=value` words off a command, as `env` does.
+pub fn split_assignments(command: &[String]) -> (Vec<(String, String)>, &[String]) {
+    let is_name = |n: &str| {
+        n.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    let count = command
+        .iter()
+        .take_while(|a| a.split_once('=').is_some_and(|(n, _)| is_name(n)))
+        .count();
+    let vars = command[..count]
+        .iter()
+        .filter_map(|a| a.split_once('='))
+        .map(|(n, v)| (n.to_string(), v.to_string()))
+        .collect();
+    (vars, &command[count..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splits_leading_assignments_only() {
+        let cmd: Vec<String> = ["PROTON_ENABLE_WAYLAND=1", "A_B=x=y", "/bin/bgmod", "FOO=1", "reaper"]
+            .map(String::from)
+            .to_vec();
+        let (vars, rest) = split_assignments(&cmd);
+        assert_eq!(vars, [("PROTON_ENABLE_WAYLAND".into(), "1".into()), ("A_B".into(), "x=y".into())]);
+        assert_eq!(rest, &cmd[2..]);
+        let plain: Vec<String> = ["/usr/bin/env", "=1"].map(String::from).to_vec();
+        assert_eq!(split_assignments(&plain).1, &plain[..]);
+    }
 
     #[test]
     fn captures_only_driver_vars_and_process_name() {

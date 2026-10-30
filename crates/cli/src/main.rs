@@ -392,10 +392,18 @@ fn setup(no_units: bool, uninstall: bool) -> Result<()> {
 fn run(command: Vec<String>) -> Result<()> {
     use std::os::unix::process::CommandExt;
 
+    // `shaderwarm run -- VAR=1 %command%` sets VAR like `env` would, instead of trying to
+    // run a program called "VAR=1".
+    let (assignments, command) = launch::split_assignments(&command);
     let (program, args) = command.split_first().context("no command given")?;
     let mut cmd = std::process::Command::new(program);
     cmd.args(args);
     let mut effective: BTreeMap<String, String> = std::env::vars().collect();
+    for (k, v) in assignments {
+        cmd.env(&k, &v);
+        effective.insert(k, v);
+    }
+    let shader_path = effective.get("STEAM_COMPAT_SHADER_PATH").map(PathBuf::from);
     let mut set_default = |cmd: &mut std::process::Command, k: String, v: String| {
         if let std::collections::btree_map::Entry::Vacant(slot) = effective.entry(k) {
             cmd.env(slot.key(), &v);
@@ -406,7 +414,7 @@ fn run(command: Vec<String>) -> Result<()> {
     // Same per-game cache as Proton's PROTON_LOCAL_SHADER_CACHE, set here so it also holds
     // on Proton builds without that option. Proton keeps values that are already set.
     set_default(&mut cmd, "PROTON_LOCAL_SHADER_CACHE".into(), "1".into());
-    if let Some(shader_path) = std::env::var_os("STEAM_COMPAT_SHADER_PATH").map(PathBuf::from) {
+    if let Some(shader_path) = shader_path {
         for dir in cache::local_cache_dirs(&shader_path) {
             let _ = std::fs::create_dir_all(dir);
         }
@@ -415,9 +423,10 @@ fn run(command: Vec<String>) -> Result<()> {
         }
     }
 
-    let appid = record::detect_appid(|k| std::env::var(k).ok(), command.iter().map(String::as_str));
+    let get = |k: &str| effective.get(k).cloned();
+    let appid = record::detect_appid(get, command.iter().map(String::as_str));
     match (appid, fossilize::layer_manifest()) {
-        (Some(appid), Some(_)) => match compact_then_record_env(appid) {
+        (Some(appid), Some(_)) => match compact_then_record_env(appid, get) {
             Ok(env) => {
                 cmd.envs(env);
             }
@@ -437,13 +446,13 @@ fn run(command: Vec<String>) -> Result<()> {
 
 /// Merges earlier sessions first (well under a second) so this session records only
 /// pipelines that are new.
-fn compact_then_record_env(appid: u32) -> Result<Vec<(String, String)>> {
+fn compact_then_record_env(appid: u32, get_env: impl Fn(&str) -> Option<String>) -> Result<Vec<(String, String)>> {
     if let Some(merge) = fossilize::locate_merge() {
         if let Err(e) = record::compact(appid, &merge) {
             eprintln!("shaderwarm: could not merge earlier recordings: {e:#}");
         }
     }
-    record::record_env(appid, |k| std::env::var(k).ok())
+    record::record_env(appid, get_env)
 }
 
 fn replay_cmd(steam: &Steam, args: ReplayArgs) -> Result<()> {
