@@ -14,9 +14,11 @@ automatically after GPU driver or Proton updates.
    ([Fossilize](https://github.com/ValveSoftware/Fossilize)) records every pipeline the
    game builds, whether it comes from DXVK (DX9-11), vkd3d-proton (DX12) or native
    Vulkan. Each launch records only pipelines that are new.
-2. **Cache locally.** The wrapper points Mesa, NVIDIA, DXVK and vkd3d-proton at
-   `steamapps/shadercache/<appid>`, the same as Proton-CachyOS's
-   `PROTON_LOCAL_SHADER_CACHE`, but on any Proton build.
+2. **Cache locally.** Each game uses its own cache in `steamapps/shadercache/<appid>`.
+   Current Steam clients already point Mesa, NVIDIA, DXVK and vkd3d-proton there, even
+   with pre-caching off. The wrapper fills in any of those variables that are missing,
+   like Proton-CachyOS's `PROTON_LOCAL_SHADER_CACHE` but on any Proton build, so you
+   don't need to turn that option on.
 3. **Replay.** `fossilize-replay` compiles the recordings into that cache at idle
    priority. Steam's own `.foz` recordings from earlier pre-caching are used too.
 4. **Stay fresh.** Each game's cache is fingerprinted by the GPU's
@@ -61,18 +63,29 @@ Other wrappers go after it, for example
 `shaderwarm run -- "/path/to/bgmod" %command%`. Its custom-variables field only
 sets variables and cannot run commands.
 
+Variables can go before `shaderwarm` or straight after `--`; both of these work:
+
+```
+PROTON_ENABLE_WAYLAND=1 shaderwarm run -- %command%
+shaderwarm run -- PROTON_ENABLE_WAYLAND=1 %command%
+```
+
+`--` marks where shaderwarm's options end and the game's command begins.
+
 ## Use
 
 | Command | What it does |
 |---|---|
-| `shaderwarm-gui` | Desktop UI: a library of your games' Steam covers with cache status, a detail panel per game (hero art, cache composition, actions), replay with progress, cleanup and settings |
+| `shaderwarm-gui` | Desktop UI: a library of your games' Steam covers with cache status, a detail panel per game (hero art, cache composition, actions), replay with progress, freeing disk space (Steam video and caches of uninstalled games), Fetch from Steam and settings |
 | `shaderwarm list` | Games with cache size, video size and status |
 | `shaderwarm status <appid>` | Engine, Proton, caches, recordings, last launch |
 | `shaderwarm replay <appid>` / `--stale` / `--all` | Compile recordings into the cache |
 | `shaderwarm clean --video` | Delete Steam's transcoded video (often GBs) |
+| `shaderwarm clean --orphans` | Delete caches and recordings of games that are no longer installed |
 | `shaderwarm clean <appid> --cache [--backup] [--recordings]` | Purge one game's compiled caches |
 | `shaderwarm restore <appid>` | Put a `--backup` purge back |
 | `shaderwarm fetch [--keep-video] [--no-replay]` | Let Steam download its shader caches once, with Shader Pre-Caching off the rest of the time |
+| `shaderwarm fetch --finish` | Turn pre-caching back off after an interrupted fetch |
 
 ### Fetching Steam's caches on demand
 
@@ -87,6 +100,28 @@ under Settings in the GUI) runs it briefly with pre-caching on:
 If the fetch is interrupted, the setting is put back the next time shaderwarm runs while
 Steam is closed. With Steam open, use `shaderwarm fetch --finish` or the GUI's Finish button.
 
+### Checking that the cache works
+
+RADV can print a running count of pipeline cache hits and misses. Add the variables to a
+game's launch option:
+
+```
+RADV_DEBUG=psocachestats PROTON_LOG=1 shaderwarm run -- %command%
+```
+
+Proton writes the log to `~/steam-<appid>.log`; Proton-CachyOS adds its build to the
+name (`~/steam-<appid>-<build>.log`). While playing, show only the moments the driver
+had to compile:
+
+```sh
+tail -F ~/steam-<appid>*.log | grep --line-buffered -E "misses=[1-9]"
+```
+
+If a stutter happens with no line appearing, it isn't shader compilation. One-off
+hitches the first time something appears in a launch are often the game loading
+assets, which no shader cache can fix. Remove the variables afterwards: Proton's log
+costs performance and grows quickly.
+
 Settings live in `~/.config/shaderwarm/settings.toml`. Your own self-compile overrides
 go in `~/.config/shaderwarm/self-precompile.toml`, in the same format as
 `data/self-precompile.toml`.
@@ -98,8 +133,14 @@ go in `~/.config/shaderwarm/self-precompile.toml`, in the same format as
 - Pre-warming straight from game files isn't implemented yet. The Unreal IoStore and
   shader library readers exist (`shaderwarm inspect <appid>`), but DX12 needs the
   root signatures Unreal builds at runtime.
+- Pipelines depend on the DXVK and vkd3d-proton versions in each Proton build. After
+  switching a game to another build (GE, CachyOS), older recordings only
+  match where those versions are the same; the rest compiles once in play and is
+  recorded from then on. Switching back costs nothing.
+- Recording only costs CPU when the game creates a pipeline that isn't recorded yet,
+  never per frame. Memory use grows with the number of recorded pipelines.
 - While recording, vkd3d-proton's `VK_EXT_shader_module_identifier` is hidden, because
-  together with the recording layer it crashed a UE5 game.
+  together with the recording layer it crashed some UE5 games.
 
 ## License
 
